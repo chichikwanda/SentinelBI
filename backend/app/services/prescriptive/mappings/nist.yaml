@@ -1,0 +1,18 @@
+# NIST Cybersecurity Framework 2.0: categories referenced by the rule files.
+#
+# STATUS: UNVERIFIED. Written from the author's knowledge of CSF 2.0, not generated from the
+# official document. Review against https://www.nist.gov/cyberframework before presenting these
+# mappings as validated.
+status: unverified-needs-review
+source: https://www.nist.gov/cyberframework
+items:
+  "PR.AA": "Identity Management, Authentication, and Access Control"
+  "PR.IR": "Technology Infrastructure Resilience"
+  "PR.PS": "Platform Security"
+  "DE.AE": "Adverse Event Analysis"
+  "DE.CM": "Continuous Monitoring"
+  "RS.MA": "Incident Management"
+  "RS.AN": "Incident Analysis"
+  "RS.CO": "Incident Response Reporting and Communication"
+  "RS.MI": "Incident Mitigation"
+  "RC.RP": "Incident Recovery Plan Execution"

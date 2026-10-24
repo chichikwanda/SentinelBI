@@ -1,0 +1,21 @@
+- id: RULE-RECON-001
+  when:
+    attack_class: Recon/Scan
+    min_severity: Low
+  recommend:
+    - action: "Check whether the scanning source is authorised (for example your own vulnerability scanner); if not, block its address at the firewall for 24 hours"
+      priority: 1
+      effort: low
+      refs: { mitre: [M1056], cis: ["13.4"], nist: ["RS.MI"] }
+    - action: "Close or firewall every port that does not need to be reachable from the internet, and expose SSH/RDP only through a VPN or an allow-list"
+      priority: 1
+      effort: medium
+      refs: { mitre: [M1035], cis: ["4.4", "12.2"], nist: ["PR.IR"] }
+    - action: "Review which services answered the scan and disable or patch the ones that are not needed"
+      priority: 2
+      effort: medium
+      refs: { mitre: [M1042], cis: ["4.8", "7.1"], nist: ["PR.PS"] }
+    - action: "Alert on repeated scans from the same source and review firewall logs for follow-up connection attempts"
+      priority: 3
+      effort: low
+      refs: { cis: ["8.11", "13.1"], nist: ["DE.AE"] }

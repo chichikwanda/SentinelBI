@@ -1,0 +1,22 @@
+- id: RULE-WEB-001
+  when:
+    attack_class: WebAttack
+    min_severity: Low
+  recommend:
+    - action: "Check web server and application logs for the source address and the URLs it targeted, and block the source if the traffic is malicious"
+      priority: 1
+      effort: low
+      refs: { mitre: [M1037], cis: ["8.11"], nist: ["DE.AE", "RS.MI"] }
+    - action: "Apply outstanding security updates to the web application, its framework and plugins"
+      priority: 1
+      effort: medium
+      refs: { mitre: [M1051], cis: ["7.4"], nist: ["PR.PS"] }
+    - action: "Put a web application firewall or reverse proxy with request filtering in front of the application"
+      priority: 2
+      effort: medium
+      refs: { mitre: [M1050], nist: ["PR.IR"] }
+    - action: "Restrict administration interfaces to allow-listed addresses or a VPN"
+      priority: 3
+      effort: low
+      refs: { mitre: [M1035], cis: ["12.2"], nist: ["PR.AA"] }
+  compliance_note: "If the application stores personal data, assess whether it was accessed; notification duties under the Cyber and Data Protection Act [Chapter 12:07] may apply. Confirm with your data protection officer or legal adviser."

@@ -1,0 +1,26 @@
+# CIS Critical Security Controls v8: safeguard ids referenced by the rule files.
+#
+# STATUS: UNVERIFIED. Titles were written from the author's knowledge of CIS Controls v8, not
+# generated from the official document (which needs a free registration). Review every id and
+# title against the official CIS Controls v8 PDF (and with a security expert or your supervisor)
+# before presenting these mappings as validated.
+status: unverified-needs-review
+source: https://www.cisecurity.org/controls
+items:
+  "4.4": "Implement and Manage a Firewall on Servers"
+  "4.8": "Uninstall or Disable Unnecessary Services on Enterprise Assets and Software"
+  "5.2": "Use Unique Passwords"
+  "5.3": "Disable Dormant Accounts"
+  "6.3": "Require MFA for Externally-Exposed Applications"
+  "6.4": "Require MFA for Remote Network Access"
+  "7.1": "Establish and Maintain a Vulnerability Management Process"
+  "7.4": "Perform Automated Application Patch Management"
+  "8.11": "Conduct Audit Log Reviews"
+  "9.2": "Use DNS Filtering Services"
+  "10.1": "Deploy and Maintain Anti-Malware Software"
+  "12.2": "Establish and Maintain a Secure Network Architecture"
+  "13.1": "Centralize Security Event Alerting"
+  "13.4": "Perform Traffic Filtering Between Network Segments"
+  "13.8": "Deploy a Network Intrusion Prevention Solution"
+  "17.3": "Establish and Maintain an Enterprise Process for Reporting Incidents"
+  "17.4": "Establish and Maintain an Incident Response Process"

@@ -1,0 +1,21 @@
+# Class-independent rules.
+- id: RULE-GEN-001
+  when:
+    attack_class: "*"
+    min_severity: High
+  recommend:
+    - action: "Open an incident record: what was seen, when, which systems, the evidence (flows) and the actions taken"
+      priority: 2
+      effort: low
+      refs: { cis: ["17.4"], nist: ["RS.MA"] }
+
+- id: RULE-GEN-002
+  when:
+    attack_class: "*"
+    min_severity: Medium
+    min_criticality: 3
+  recommend:
+    - action: "This affects a high-criticality network: inform the system owner now and review recent changes and access to it"
+      priority: 1
+      effort: low
+      refs: { cis: ["17.3"], nist: ["RS.CO"] }

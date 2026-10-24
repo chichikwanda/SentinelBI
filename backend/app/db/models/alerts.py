@@ -48,6 +48,9 @@ class Alert(Base):
     asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("assets.id", ondelete="SET NULL")
     )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sources.id", ondelete="SET NULL"), index=True
+    )
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     attack_class: Mapped[str] = mapped_column(Text, nullable=False)
@@ -67,6 +70,9 @@ class Alert(Base):
 
 class Recommendation(Base):
     __tablename__ = "recommendations"
+    __table_args__ = (
+        Index("uq_recommendations_alert_id_rec_key", "alert_id", "rec_key", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -85,12 +91,14 @@ class Recommendation(Base):
         UUID(as_uuid=True), ForeignKey("alerts.id", ondelete="CASCADE"), nullable=False, index=True
     )
     rule_id: Mapped[str] = mapped_column(Text, nullable=False)
+    rec_key: Mapped[str] = mapped_column(Text, nullable=False)  # "<rule id>:<action index>"
     action: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     effort: Mapped[str | None] = mapped_column(Text)
     refs: Mapped[dict[str, object]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    compliance_note: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         Text, nullable=False, default="open", server_default=text("'open'")
     )

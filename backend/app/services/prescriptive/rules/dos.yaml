@@ -1,0 +1,34 @@
+# Denial of service / flooding. Priority 1 = do first. Refs: mitre = ATT&CK mitigation id,
+# cis = CIS Controls v8 safeguard, nist = NIST CSF 2.0 category (see ../mappings/*.yaml).
+- id: RULE-DOS-001
+  when:
+    attack_class: DoS/DDoS
+    min_severity: Low
+  recommend:
+    - action: "Rate-limit new connections per source and enable SYN-flood protection on the perimeter firewall and the targeted service"
+      priority: 1
+      effort: low
+      refs: { mitre: [M1037], cis: ["13.4"], nist: ["PR.IR"] }
+    - action: "Block or rate-limit the offending source addresses at the edge firewall"
+      priority: 1
+      effort: low
+      refs: { mitre: [M1037], cis: ["13.4"], nist: ["RS.MI"] }
+    - action: "If the internet link is saturated, ask your ISP or upstream provider for filtering or scrubbing"
+      priority: 2
+      effort: medium
+      refs: { nist: ["RS.MI"] }
+    - action: "Confirm the targeted service has capacity headroom or a fallback, and record the outage window in the incident log"
+      priority: 3
+      effort: medium
+      refs: { cis: ["17.4"], nist: ["PR.IR", "RS.MA"] }
+  compliance_note: "An availability incident. If systems holding personal data were affected, assess whether notification duties under the Cyber and Data Protection Act [Chapter 12:07] apply; confirm with your data protection officer or legal adviser."
+
+- id: RULE-DOS-002
+  when:
+    attack_class: DoS/DDoS
+    min_severity: High
+  recommend:
+    - action: "Activate your incident response plan: notify management and the person responsible for IT, and keep a timeline of events"
+      priority: 2
+      effort: low
+      refs: { cis: ["17.4"], nist: ["RS.MA"] }

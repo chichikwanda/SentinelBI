@@ -1,0 +1,29 @@
+- id: RULE-BF-001
+  when:
+    attack_class: BruteForce
+    min_severity: Medium
+    dst_port_in: [21, 22, 23, 25, 110, 143, 445, 1433, 3306, 3389, 5900]
+  recommend:
+    - action: "Enforce account lockout or login rate limiting on the targeted service"
+      priority: 1
+      effort: low
+      refs: { mitre: [M1036], cis: ["5.2", "6.3"], nist: ["PR.AA"] }
+    - action: "Require multi-factor authentication for remote access and restrict RDP/SSH to a VPN or allow-listed addresses"
+      priority: 1
+      effort: medium
+      refs: { mitre: [M1032], cis: ["6.3", "6.4"], nist: ["PR.AA"] }
+    - action: "Block the source address at the firewall for 24 hours and review authentication logs for successful logins from it"
+      priority: 2
+      effort: low
+      refs: { mitre: [M1037], cis: ["8.11"], nist: ["RS.MI", "DE.AE"] }
+  compliance_note: "If any account was compromised, assess whether personal data was accessed; notification duties under the Cyber and Data Protection Act [Chapter 12:07] may apply. Confirm with your data protection officer or legal adviser."
+
+- id: RULE-BF-002
+  when:
+    attack_class: BruteForce
+    min_severity: Low
+  recommend:
+    - action: "Enforce strong, unique passwords and disable unused or default accounts on the targeted system"
+      priority: 2
+      effort: medium
+      refs: { mitre: [M1027], cis: ["5.2", "5.3"], nist: ["PR.AA"] }

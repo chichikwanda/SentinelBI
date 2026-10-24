@@ -1,0 +1,22 @@
+- id: RULE-BOT-001
+  when:
+    attack_class: Botnet/Backdoor
+    min_severity: Low
+  recommend:
+    - action: "Isolate the affected internal host from the network and investigate it for compromise"
+      priority: 1
+      effort: medium
+      refs: { mitre: [M1030], cis: ["13.4"], nist: ["RS.MI"] }
+    - action: "Block the remote command-and-control addresses at the firewall and DNS, then search other hosts for connections to them"
+      priority: 1
+      effort: low
+      refs: { mitre: [M1037, M1031], cis: ["9.2", "13.4"], nist: ["DE.CM", "RS.MI"] }
+    - action: "Run a full anti-malware scan, change credentials used on the host, and rebuild it from a clean image if malware is found"
+      priority: 2
+      effort: high
+      refs: { mitre: [M1049], cis: ["10.1"], nist: ["RS.MI", "RC.RP"] }
+    - action: "Preserve logs and evidence, and assess whether personal data was accessed or sent out"
+      priority: 2
+      effort: medium
+      refs: { cis: ["8.11", "17.4"], nist: ["RS.AN"] }
+  compliance_note: "A compromised host may have exposed personal data. Assess this early: notification duties under the Cyber and Data Protection Act [Chapter 12:07] may apply. Confirm with your data protection officer or legal adviser."
