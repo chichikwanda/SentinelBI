@@ -23,6 +23,12 @@ RUN uv sync --frozen --no-dev \
  && useradd --system --uid 10001 --no-create-home app \
  && mkdir -p /repo/data/samples
 COPY data/samples /repo/data/samples
+# LightGBM (and any OpenMP-linked model) needs the OpenMP runtime, which python:slim lacks.
+# scikit-learn bundles its own, so a Random Forest loads without it and this bug stayed hidden
+# until a LightGBM artifact was loaded inside the container.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
 USER app
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
