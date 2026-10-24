@@ -89,3 +89,60 @@ produces a trained model, `PlaceholderPredictor` applies fixed, documented rules
 features. It is **not** a trained model: it is registered in `model_registry` as
 `placeholder-heuristic-v0` with empty metrics and no dataset, and no claims are made about its
 accuracy.
+
+## ADR-013: `org_id` on every tenant table; global reference tables are exempt
+
+**Deviation.** Design rule 1 says every table carries `org_id`. The plan's `recommendations` and
+`evaluation_responses` tables omit it, so we add it (scoping queries without a join is safer).
+`model_registry` and `vulnerabilities` stay global on purpose: models and the CVE/KEV catalogue
+are platform-wide, not tenant data. `flows`/`predictions` carry `org_id` without a foreign key to
+keep hypertable inserts cheap; the worker only ever writes the `org_id` taken from the authenticated
+source.
+
+## ADR-014: Risk weights are provisional
+
+`app/services/risk/scoring.py` uses the formula from plan section 7 with impact weights DoS 0.6,
+BruteForce 0.7, Botnet 0.9, Exploit 0.9 (given in the plan as examples) plus Recon 0.3 and
+WebAttack 0.7 (our provisional values), and a criticality factor of 0.75 / 1.0 / 1.25 for
+criticality 1 / 2 / 3 (the plan multiplies by the raw criticality, which would exceed 1 after
+clipping). In this phase an alert's score is `100 x` the maximum event risk in its group; asset and
+organisation aggregation, KEV and threat-intel exposure terms come with the risk phase. These
+numbers must be expert-elicited and justified in the thesis before they are presented as results.
+
+## ADR-015: Router flows are unidirectional, training flows are bidirectional (open)
+
+NetFlow v5/v9 records describe one direction; `out_bytes`/`out_pkts` are therefore 0 for routers
+that do not export output counters. The NF-v2 datasets are bidirectional (IN and OUT populated),
+so a model trained on them sees different `OUT_*`-derived features than the collector produces:
+exactly the train/serve skew the plan warns about. Before the real model goes live either the
+collector pairs reverse-direction records into one bidirectional flow, or the "core" feature set
+drops the OUT-derived features. Decide in Phase 2 when the datasets are inspected.
+
+## ADR-016: Web app is a thin BFF; JWT lives in an httpOnly cookie
+
+**Deviation** (plan: "NextAuth or custom JWT cookie"). Route handlers `/api/session/*` exchange
+credentials with the API and set an httpOnly, SameSite=Lax cookie (`COOKIE_SECURE=true` behind
+TLS). `/api/proxy/*` forwards same-origin calls to the API with the token as a Bearer header, so
+there is no CORS configuration and page JavaScript can never read the token. State-changing
+proxy calls also refuse a cross-origin `Origin`. Expired tokens surface as a 401, which clears the
+cookie and returns to `/login`. There is no refresh token yet.
+
+## ADR-017: Frontend choices
+
+* The scaffold's `cacheComponents` / `partialPrefetching` flags are removed: every page here is
+  authenticated and dynamic, so they add behaviour we do not need and cannot yet vouch for.
+* UI primitives (`components/ui/*`) are written by hand in the shadcn/ui style (class-variance-
+  authority + tailwind-merge) rather than generated with the shadcn CLI; the CLI can be adopted
+  later without changing call sites.
+* System font stack instead of `next/font/google`: no build-time network dependency.
+* "Live" alerts poll every 3 s with TanStack Query. SSE (`GET /stream/alerts`, in the plan) is not
+  built yet.
+* API types are hand-written in `lib/types.ts`; generating them from the OpenAPI schema is the
+  next step so the contract cannot drift.
+
+## ADR-018: Tests run against real Postgres/TimescaleDB and Redis
+
+No mocks on the data path. `tests/backend/conftest.py` creates `sentinelbi_test`, runs the real
+Alembic migration, and uses Redis db 1 (flushed per test). `make test` runs this inside the dev
+image on Linux; host runs on Windows additionally need the selector event loop (set in
+conftest) and `127.0.0.1` instead of `localhost`.
