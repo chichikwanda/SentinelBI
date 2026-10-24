@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     secret_key: SecretStr
     access_token_minutes: int = 60
+    allow_registration: bool = True  # open org sign-up; disable on a public deployment
 
     # What the onboarding wizard tells users to point their router at.
     collector_public_host: str = "localhost"

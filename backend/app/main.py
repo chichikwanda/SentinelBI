@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
+from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.redis import get_redis
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="dependency unavailable") from exc
         return {"status": "ready"}
 
+    app.include_router(api_router)
     return app
 
 
