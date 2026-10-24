@@ -1,0 +1,176 @@
+name: sentinelbi
+
+# Single-VM deployment (no Kubernetes). `cp .env.example .env && docker compose up -d --wait`.
+
+x-backend-env: &backend-env
+  ENV: ${ENV:-dev}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+  ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-60}
+  ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+  COLLECTOR_PUBLIC_HOST: ${COLLECTOR_PUBLIC_HOST:-localhost}
+  COLLECTOR_PUBLIC_PORT: ${COLLECTOR_PUBLIC_PORT:-2055}
+  API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:8000}
+  PSEUDONYMIZE_IPS: ${PSEUDONYMIZE_IPS:-false}
+  PSEUDONYM_KEY: ${PSEUDONYM_KEY:-dev-only-pseudonym-key}
+  SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+  DEMO_PASSWORD: ${DEMO_PASSWORD:-dev-only-demo-password}
+  DEMO_API_KEY: ${DEMO_API_KEY:-sbi_demo_dev_only_api_key_0000000000000000}
+
+x-backend-build: &backend-build
+  context: .
+  dockerfile: backend/Dockerfile
+  target: runtime
+
+services:
+  db:
+    image: timescale/timescaledb:2.30.2-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.9-alpine
+    # noeviction: when full, XADD fails and the ingest API answers 503 (backpressure)
+    # instead of Redis silently evicting unprocessed flows.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot: applies migrations (and the demo seed when SEED_DEMO_DATA=true), then exits.
+  migrate:
+    build: *backend-build
+    command:
+      - sh
+      - -c
+      - 'alembic upgrade head && if [ "$$SEED_DEMO_DATA" = "true" ]; then python -m app.db.seed; fi'
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: *backend-build
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *backend-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    build: *backend-build
+    command: ["python", "-m", "app.workers.stream_consumer"]
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.core.heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  collector:
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+    # On Linux this preserves the exporter's source IP. Docker Desktop (Windows/macOS) rewrites
+    # it, so exporter allow-listing only works as designed on a Linux host (see docs/DECISIONS.md).
+    ports:
+      - "${COLLECTOR_PUBLIC_PORT:-2055}:2055/udp"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime('/tmp/healthy')<30 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  # `make test` / `make lint`. Mounts the repo so tests see your working tree.
+  test:
+    profiles: ["test"]
+    build:
+      <<: *backend-build
+      target: dev
+    working_dir: /repo
+    environment:
+      <<: *backend-env
+      ENV: test
+      # tests create/drop their own database (sentinelbi_test) using this admin connection
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/postgres
+      REDIS_URL: redis://redis:6379/1
+    volumes:
+      - .:/repo
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:

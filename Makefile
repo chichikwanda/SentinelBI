@@ -32,13 +32,13 @@ test: env ## pytest (backend, collector, ml) inside the dev image against a thro
 	$(TEST) pytest
 
 lint: env ## ruff + mypy
-	$(TEST) sh -c "ruff check /repo && ruff format --check /repo && mypy app ../collector"
+	$(TEST) sh -c "ruff check . && ruff format --check . && mypy --config-file backend/pyproject.toml backend/app collector"
 
 fmt: env ## Auto-format and fix
-	$(TEST) sh -c "ruff check --fix /repo && ruff format /repo"
+	$(TEST) sh -c "ruff check --fix . && ruff format ."
 
 typecheck: env ## mypy only
-	$(TEST) mypy app ../collector
+	$(TEST) mypy --config-file backend/pyproject.toml backend/app collector
 
 train: env ## Train/compare models (Phase 2; currently a stub that exits non-zero)
 	$(TEST) python -m sentinelbi_ml.train
