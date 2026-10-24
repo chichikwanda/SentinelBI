@@ -10,6 +10,8 @@ x-backend-env: &backend-env
   SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
   ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-60}
   ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+  PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
+  MODELS_DIR: /repo/ml/models
   COLLECTOR_PUBLIC_HOST: ${COLLECTOR_PUBLIC_HOST:-localhost}
   COLLECTOR_PUBLIC_PORT: ${COLLECTOR_PUBLIC_PORT:-2055}
   API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:8000}
@@ -64,17 +66,21 @@ services:
     command:
       - sh
       - -c
-      - 'alembic upgrade head && if [ "$$SEED_DEMO_DATA" = "true" ]; then python -m app.db.seed; fi'
+      - 'alembic upgrade head && if [ "$$SEED_DEMO_DATA" = "true" ]; then python -m app.db.seed; fi && python -m app.services.inference.registry sync'
     environment: *backend-env
     depends_on:
       db:
         condition: service_healthy
     restart: "no"
+    volumes:
+      - ./ml/models:/repo/ml/models:ro
 
   api:
     build: *backend-build
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: *backend-env
+    volumes:
+      - ./ml/models:/repo/ml/models:ro
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -94,6 +100,8 @@ services:
     build: *backend-build
     command: ["python", "-m", "app.workers.stream_consumer"]
     environment: *backend-env
+    volumes:
+      - ./ml/models:/repo/ml/models:ro
     depends_on:
       migrate:
         condition: service_completed_successfully

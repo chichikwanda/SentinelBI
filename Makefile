@@ -1,8 +1,13 @@
 .DEFAULT_GOAL := help
 COMPOSE ?= docker compose
 TEST    := $(COMPOSE) --profile test run --rm --build test
+ML      := uv run --project ml --extra train python -I -m
+# newest exported model directory (override with MODEL=<version>)
+MODEL   ?= $(shell ls -1t ml/models 2>/dev/null | grep -v '^\.' | head -1)
+FILE    ?= data/processed/demo_sample.csv
+DEMO_API_KEY ?= sbi_demo_dev_only_api_key_0000000000000000
 
-.PHONY: help env up down logs ps migrate seed test lint fmt typecheck train replay e2e psql
+.PHONY: help env up down logs ps migrate seed test lint fmt typecheck data train sample models replay e2e psql
 
 help: ## Show targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -22,7 +27,7 @@ logs: ## Tail logs
 ps: ## Service status / health
 	$(COMPOSE) ps
 
-migrate: env ## Apply database migrations (and seed demo data if SEED_DEMO_DATA=true)
+migrate: env ## Apply migrations, demo seed (if enabled) and register models found in ml/models
 	$(COMPOSE) run --rm --build migrate
 
 seed: env ## Re-run the idempotent demo seed
@@ -40,15 +45,25 @@ fmt: env ## Auto-format and fix
 typecheck: env ## mypy only
 	$(TEST) mypy --config-file backend/pyproject.toml backend/app collector
 
-train: env ## Train/compare models (Phase 2; currently a stub that exits non-zero)
-	$(TEST) python -m sentinelbi_ml.train
+data: ## Download NF-UNSW-NB15-v2 (verified source; SHA-256 recorded in its MANIFEST.json)
+	@test -d data/raw/nf-unsw-nb15-v2 || $(ML) sentinelbi_ml.download nf-unsw-nb15-v2 --out data/raw
 
-replay: env ## Replay the synthetic sample CSV through the ingest API (needs `make up`)
-	$(COMPOSE) run --rm --build migrate python -m app.services.ingestion.csv_replay \
-	  --file /repo/data/samples/synthetic_flows.csv --api-url http://api:8000 \
-	  --api-key "$${DEMO_API_KEY:-sbi_demo_dev_only_api_key_0000000000000000}"
+train: data ## Compare 5 models, export the best, benchmark serving latency, register it (needs `uv`)
+	$(ML) sentinelbi_ml.train
+	$(ML) sentinelbi_ml.evaluate ml/models/$(MODEL)
+	$(COMPOSE) run --rm migrate python -m app.services.inference.registry sync
 
-e2e: ## Playwright smoke test against the running stack (needs `make up`)
+sample: ## Demo replay CSV from the model's HELD-OUT test rows (gitignored; derived from the dataset)
+	$(ML) sentinelbi_ml.sample ml/models/$(MODEL) --out $(FILE)
+
+models: ## List registered models (* = active)
+	$(COMPOSE) run --rm migrate python -m app.services.inference.registry list
+
+replay: env ## Replay a CSV through the ingest API (default: the demo sample; FILE=... to change)
+	$(COMPOSE) run --rm -v ./data:/repo/data:ro migrate python -m app.services.ingestion.csv_replay \
+	  --file /repo/$(FILE) --api-url http://api:8000 --api-key "$(DEMO_API_KEY)"
+
+e2e: ## Playwright smoke tests against the running stack (needs `make up`)
 	cd tests/e2e && npm ci && npx playwright install chromium && npx playwright test
 
 psql: ## psql shell into the database

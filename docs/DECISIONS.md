@@ -146,3 +146,110 @@ No mocks on the data path. `tests/backend/conftest.py` creates `sentinelbi_test`
 Alembic migration, and uses Redis db 1 (flushed per test). `make test` runs this inside the dev
 image on Linux; host runs on Windows additionally need the selector event loop (set in
 conftest) and `127.0.0.1` instead of `localhost`.
+
+---
+
+# Phase 2 / MVP completion (second session)
+
+## ADR-015 update: resolved by pairing records in the collector
+
+Checked against the real file: NF-UNSW-NB15-v2 flows ARE bidirectional (IN_* and OUT_* both
+populated). The collector therefore merges a record with its reverse-direction partner
+(`collector/pairing.py`): the earlier record (ties: the one aimed at the lower, service port) is the
+client, `in_*` = client to server, `out_*` = server to client, TCP flags are OR-ed, duration spans both.
+Records that find no partner within `PAIRING_HOLD_S` (default 10 s) are emitted unchanged. Pairing is
+keyed per source, so tenants can never be merged. Cost: up to 10 s extra detection latency on the
+NetFlow path (HTTP/sensor/CSV paths carry bidirectional flows already and are not delayed).
+Residual risk: NetFlow's active/inactive timeouts can split one long conversation into several
+records; those are paired record-by-record, which only approximates nProbe's bidirectional flows.
+Not verified against a real router (none available on the development machine).
+
+## ADR-016b: the first real model (measured, not claimed)
+
+Trained on NF-UNSW-NB15-v2 with the shared core features (`make train`): 2,390,275 rows, 424,336 exact
+duplicates removed, stratified random 70/15/15 split (no timestamps exist), benign down-sampled to 400k
+in the TRAIN split only. Compared LR, DT, RF, LightGBM, XGBoost; **selection rule fixed in advance:
+best validation macro-F1** => Random Forest (0.598; LightGBM 0.584, XGBoost 0.573, DT 0.570, LR 0.282).
+The test split was evaluated once, for the selected model only:
+
+| Test (294,891 flows) | |
+|---|---|
+| Accuracy | 99.11% (not the headline: ~96% of traffic is benign) |
+| Macro-F1 | 0.610 |
+| False-alarm rate (benign flagged as any attack) | 0.50% |
+| Attack detection rate (any attack class flagged) | 99.82% |
+| ROC-AUC (one-vs-rest, macro) | 0.996 |
+| Per-class F1 | Benign 0.997, Exploit/Other 0.884, Recon/Scan 0.857, DoS/DDoS 0.484, Botnet/Backdoor 0.298, WebAttack 0.140 |
+| Serving latency | 32 ms per 500 flows (single thread, idle machine; plan target < 50 ms) |
+
+**Dataset shift (informal probe, not a metric).** Hand-made flows resembling everyday traffic (HTTPS small and
+large, HTTP, SMTP, DNS, a UDP stream, ICMP) were all labelled Exploit/Other with probability 0.34-0.81; only an
+SSH flow was Benign. The `alert_min_probability` gate (0.7) lets the highest of these through (an e2e test
+with 12 plain HTTPS flows raised an alert). On this evidence the model will produce false alarms on real
+networks. Not tuned away on purpose: moving the threshold using the test split would contaminate it.
+
+**Throughput (measured on the Windows/Docker Desktop development machine, not a target VM).** One 500-flow
+batch: RF inference 130-450 ms in the container (32 ms on the idle host), flows INSERT ~430 ms, other SQL ~200 ms,
+plus commit/Redis; live worker batches ran 2-11 s, i.e. roughly 65-230 flows/s, well below the plan's
+2,000 flows/s target. Not profiled further or optimised; load testing is deferred. Obvious levers: more worker
+replicas (the consumer group scales), COPY for flows, larger batches, a Linux host.
+
+Read this honestly: the model separates attack from benign very well and recognises exploits and
+scans, but it is poor at telling DoS, backdoor and web attacks apart (their NetFlow features are
+weak and, after de-duplication, only ~700 distinct backdoor and web examples exist). Scores are
+optimistic because the split is random and same-session flows can land on both sides. Not done and
+therefore NOT claimed: k-fold cross-validation, hyper-parameter search, cross-dataset
+generalisation, significance tests, an MLP, any evaluation on real SME traffic. These are deferred
+by decision (MVP first) and listed in the model card (`training.not_done`).
+
+## ADR-017b: model artifacts are verified before they are loaded
+
+`model.joblib` files are pickles. The card stores the artifact's SHA-256; the loader refuses a
+mismatch, refuses a card whose feature list differs from the serving features, and rejects version
+strings that would escape the models directory. A model that fails to load never takes the worker
+down: it keeps serving the previous model. `migrate` registers every model found in `ml/models`
+and activates the newest only when just the placeholder is active, so an administrator's choice is
+never overridden. Switching the model is platform-wide, so it needs an administrator whose email is
+in `PLATFORM_ADMIN_EMAILS` (an organisation admin is not enough).
+
+## ADR-018b: alerts need a flagged SHARE, not just a count
+
+A per-flow classifier with a ~0.5% false-alarm rate would raise alerts for any busy benign host
+(5 flagged flows in a minute is routine at 1,000 flows/minute). An alert now also requires the
+flagged flows to be at least `ALERT_MIN_SHARE` (default 20%) of ALL the source's flows in the
+window. Trade-off: an attacker hiding a few attack flows inside lots of normal traffic from the same
+address can stay below the gate. The value is a provisional default, not tuned.
+
+## ADR-019: prescriptive rules and what was verified
+
+Rules are YAML (`rules/*.yaml`, schema-validated at load) mapping each attack class to ranked actions
+with ATT&CK / CIS / NIST references and a generic Zimbabwe data-protection note. **Verified:** every
+MITRE mitigation id exists in ATT&CK 20.0 (the mapping file is generated from the STIX data and the
+generator fails otherwise). **Not verified:** CIS Controls v8 and NIST CSF 2.0 ids and titles were
+written from the author's knowledge; the files say `unverified-needs-review`. The compliance notes
+deliberately cite no section numbers or deadlines (a test enforces that) until a lawyer has
+confirmed the interpretation of the Cyber and Data Protection Act [Chapter 12:07]. Context rules
+(KEV-vulnerable exposed service, threat-intel hits) are not built: no vulnerability or intel data is
+ingested yet.
+
+## ADR-020: explanations exist only for boosted-tree models
+
+LightGBM/XGBoost compute exact tree-SHAP natively, so alert detail can show per-feature
+contributions without the heavy `shap` package. The selected model is a Random Forest, which has no
+native support, so alerts currently show "no explanation available" instead of an invented one.
+Options for later: serve LightGBM (validation macro-F1 0.584 vs 0.598, within what a different split
+could change), or add `shap` to the serving image.
+
+## ADR-021: retention applies to replayed history
+
+The 30-day Timescale retention policy also drops flows whose own timestamps are older than 30 days.
+Replaying a historical capture with `--keep-timestamps` will therefore lose it in the background; the
+default (server stamps ingest time) is unaffected. An earlier test used year-old NetFlow export
+times and flaked for exactly this reason; test packets now use the current time.
+
+## ADR-022: demo data policy
+
+The real-data demo sample is generated locally from the held-out TEST split (`make sample`) and is
+never committed, because it is a subset of a dataset licensed for academic use with citation. It is
+enriched with attacks (the real data is ~96% benign) purely so a demo has something to show; that is
+a presentation choice, not a performance claim.
