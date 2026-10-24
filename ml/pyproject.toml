@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinelbi-ml"
+version = "0.1.0"
+description = "SentinelBI feature definitions and training code, shared by training and serving."
+requires-python = ">=3.11"
+# Only what the *serving* path needs. Heavy training deps live in the `train` extra.
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+train = [
+  "scikit-learn>=1.5",
+  "xgboost>=2.1",
+  "lightgbm>=4.5",
+  "shap>=0.46",
+  "optuna>=4.0",
+  "joblib>=1.4",
+  "pyarrow>=17",
+]
+
+# The plan lays code out as ml/src/*.py. Map that directory to the importable
+# package `sentinelbi_ml` so backend and training both `import sentinelbi_ml.features`.
+[tool.setuptools]
+packages = ["sentinelbi_ml"]
+
+[tool.setuptools.package-dir]
+sentinelbi_ml = "src"

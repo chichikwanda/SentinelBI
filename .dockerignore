@@ -1,0 +1,16 @@
+.git
+.env
+**/__pycache__
+**/.venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/node_modules
+frontend/.next
+tests/e2e/node_modules
+data/raw
+data/interim
+data/processed
+ml/models
+docs
+*.md

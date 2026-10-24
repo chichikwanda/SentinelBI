@@ -1,0 +1,7 @@
+# Containers run Linux: keep LF everywhere so shell/entrypoint scripts never get CRLF.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.parquet binary

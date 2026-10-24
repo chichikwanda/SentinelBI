@@ -1,0 +1,25 @@
+# Shared lint/format config for backend, collector, ml and tests.
+line-length = 100
+target-version = "py311"
+extend-exclude = ["frontend", "data", "ml/models"]
+src = ["backend", "collector", "ml", "tests"]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "ASYNC", "S", "RUF"]
+ignore = [
+  "RUF012",  # mutable class attrs: SQLAlchemy/pydantic idioms trip this
+  "B008",    # FastAPI Depends() in argument defaults is the framework idiom
+]
+
+[lint.isort]
+# backend/alembic/ (migrations) is a directory, not the library: keep `alembic` third-party.
+known-third-party = ["alembic"]
+known-first-party = ["app", "sentinelbi_ml"]
+
+[lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S311"]
+"backend/alembic/**" = ["E501"]
+"ml/src/synth_sample.py" = ["S311"]  # synthetic demo data, not security-sensitive randomness
+
+[format]
+quote-style = "double"
