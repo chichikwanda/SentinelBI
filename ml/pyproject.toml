@@ -14,14 +14,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Training environment (`uv run --project ml --extra train ...`). SHAP-style per-prediction
+# contributions come from LightGBM/XGBoost natively (pred_contrib), so the heavy `shap`
+# package is not required; Optuna tuning is deferred.
 train = [
   "scikit-learn>=1.5",
   "xgboost>=2.1",
   "lightgbm>=4.5",
-  "shap>=0.46",
-  "optuna>=4.0",
   "joblib>=1.4",
-  "pyarrow>=17",
 ]
 
 # The plan lays code out as ml/src/*.py. Map that directory to the importable

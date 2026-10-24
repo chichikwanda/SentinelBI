@@ -1,27 +1,73 @@
 # Datasets ledger
 
-**No dataset has been downloaded or verified yet** (Phase 2). Nothing in this repository was
-trained or evaluated on real data, and no result in the codebase comes from a real dataset.
-
 Rule: before a dataset is used, verify its URL, licence and filenames, download it, and record
-the SHA-256 of every file here. If a URL has changed or a download fails, record that too; do not
-guess.
+the SHA-256 of every file here. If a URL has changed or a download fails, record that too; do
+not guess. Downloads go to `data/raw/` (gitignored). Only what was verified is listed as such.
 
-| Dataset | Planned source (from the project plan, NOT yet verified) | Licence | Files + SHA-256 | Status |
-|---|---|---|---|---|
-| NF-UNSW-NB15-v2, NF-CSE-CIC-IDS2018-v2, NF-ToN-IoT-v2, NF-BoT-IoT-v2, NF-UQ-NIDS-v2 | https://staff.itee.uq.edu.au/marius/NIDS_datasets/ | tbc | tbc | not downloaded |
-| CIC-IDS2017 (corrected labels, Engelen et al. 2021) | https://www.unb.ca/cic/datasets/ids-2017.html | tbc | tbc | not downloaded |
-| CSE-CIC-IDS2018 | https://registry.opendata.aws/cse-cic-ids2018/ | tbc | tbc | not downloaded |
-| UNSW-NB15 | https://research.unsw.edu.au/projects/unsw-nb15-dataset | tbc | tbc | not downloaded |
+## NF-UNSW-NB15-v2 (downloaded and used for training: 2026-10-24)
 
-## Synthetic sample (in the repo)
+| | |
+|---|---|
+| Landing page | https://staff.itee.uq.edu.au/marius/NIDS_datasets/ ("NetFlow V2 Datasets") |
+| Host record | UQ Research Data Manager, dataset `8c6e2a00-ef9c-11ed-827d-e762de186848` (`status=PUBLISHED`, `accessType=OPEN`) |
+| How it is fetched | `ml/src/download.py`: asks `https://api.rdm.uq.edu.au/datasets/<id>/download` for a time-limited signed S3 URL, streams it, checksums it |
+| Licence (verbatim from the host) | "The use of the datasets for academic research purposes is granted in perpetuity after citing the above papers. For commercial purposes, it should be agreed upon by the authors. Please get in touch with the author Mohanad Sarhan for more details." |
+| Citation | Sarhan, Layeghy, Portmann. *Towards a Standard Feature Set for Network Intrusion Detection System Datasets.* Mobile Networks and Applications, 2022. https://doi.org/10.1007/s11036-021-01843-0 |
 
-`data/samples/synthetic_flows.csv`: 705 flows (600 benign, 80 SYN-scan, 25 UDP-flood), generated
-deterministically (seed 20261024) by `ml/src/synth_sample.py`. Not real traffic. A test fails if
-the committed file stops matching the generator. Use it for demos and pipeline tests only.
+| File | Bytes | SHA-256 |
+|---|---:|---|
+| `nf-unsw-nb15-v2.zip` | 33,877,423 | `0e42c11dc9799a1e0851ff0b98c2ed1b47c56331a6eb99ba14c800cfe94d03ed` |
+| `.../data/NF-UNSW-NB15-v2.csv` | 441,867,785 | `05019e3ac8d55b3f074f9f042623bbbb1af2527b8b78558c69353ccb2ccefa3f` |
+| `.../data/NetFlow_v2_Features.csv` | 2,115 | `f20e86a939f9eb53b06ace15de4cc977ed61c02e538c6465efe72b635448e939` |
 
-## Known open items before the datasets are used
+The archive's other files are listed with checksums in `data/raw/nf-unsw-nb15-v2/MANIFEST.json`
+(written by the downloader).
 
-- The raw column names in `ml/src/features.py` (`CANONICAL_TO_RAW`) follow the NF-v2 naming from
-  the plan and must be checked against the real CSV headers.
-- NF-v2 flows are bidirectional; router NetFlow v5/v9 records are unidirectional (ADR-015).
+**Checked against the real file (not assumed):**
+
+- 2,390,275 flows, identical to the host's published count; per-class counts also match the
+  host's table exactly (Benign 2,295,222; Exploits 31,551; Fuzzers 22,310; Generic 16,560;
+  Reconnaissance 12,779; DoS 5,794; Analysis 2,299; Backdoor 2,169; Shellcode 1,427; Worms 164).
+- The raw column names used by `ml/src/features.py` (`CANONICAL_TO_RAW`) match the CSV header
+  exactly. The 43 features plus `Label` and `Attack` are all present, no missing values.
+- **No timestamp column**: a time-aware split is impossible; the split is random and stratified.
+- Flows are **bidirectional** (IN and OUT counters both populated), hence the pairing step in the
+  collector (ADR-015).
+- **Exact duplicates are common**: 424,336 of 2,390,275 rows (17.8%) share every model input and
+  the label with another row. Per class: Backdoor 67.5%, WebAttack ("Analysis") 69.3%,
+  DoS 30.8%, Exploit/Other 24.0%, Benign 17.5%, Recon 13.8%. They were removed before splitting,
+  leaving only 705 distinct Backdoor and 706 distinct WebAttack flows, which limits what any model can
+  learn for those classes.
+- The label mapping to the project taxonomy is in `ml/src/preprocess.py` (`ATTACK_TO_CLASS`).
+  BruteForce has no examples in this dataset.
+
+## MITRE ATT&CK Enterprise (downloaded: 2026-10-24)
+
+| | |
+|---|---|
+| Source | https://github.com/mitre-attack/attack-stix-data, `enterprise-attack/enterprise-attack.json` (raw.githubusercontent.com, `master`) |
+| Version | ATT&CK 20.0 (from the bundle's `x-mitre-collection`) |
+| Bytes / SHA-256 | 55,271,014 / `81113ba98afa2928f3dcff62022539f7ce30c315c32e14422f11ff95ce534352` |
+| Used for | `backend/app/services/prescriptive/mappings/mitre.yaml`, generated by `sync_mitre.py`, which fails if a rule cites a mitigation id absent from this file (all 14 cited ids were found) |
+| Licence | MITRE's ATT&CK terms of use apply; **not reviewed here**, confirm before redistributing |
+
+## Not downloaded (planned in the project plan, URLs NOT verified)
+
+NF-CSE-CIC-IDS2018-v2, NF-ToN-IoT-v2, NF-BoT-IoT-v2, NF-UQ-NIDS-v2 (same UQ page, same host and
+download mechanism as above, so `download.py` can fetch them once their host ids are added);
+CIC-IDS2017 (corrected labels), CSE-CIC-IDS2018, UNSW-NB15, CISA KEV, NVD, EPSS, abuse.ch feeds.
+
+## Not datasets: reference mappings written by hand
+
+`mappings/cis.yaml` (CIS Controls v8) and `mappings/nist.yaml` (NIST CSF 2.0) were written from the
+author's knowledge, not generated from the official documents, and are marked
+`status: unverified-needs-review`. They must be checked against the official texts (and by a
+security expert or supervisor) before being presented as validated.
+
+## Derived and synthetic data
+
+- `data/samples/synthetic_flows.csv`: 705 SYNTHETIC flows made by `ml/src/synth_sample.py`
+  (seed 20261024). Not real traffic; used by tests and the placeholder-era demo.
+- `data/processed/demo_sample.csv` (gitignored, made by `make sample`): 2,962 real flows drawn
+  from the held-out TEST split of NF-UNSW-NB15-v2, enriched with attacks for demonstration. It is a
+  subset of a licensed dataset, so it is generated locally and never committed.
