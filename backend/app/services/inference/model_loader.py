@@ -1,9 +1,8 @@
-"""Chooses the predictor the worker uses.
+"""Predictor selection lives in ``registry``; this module keeps the original entry point.
 
-Phase 2 replaces the body with: read the active ``model_registry`` row, load the exported
-pipeline + ``model_card.json``, verify its feature list equals ``CORE_FEATURES`` (or the
-sensor feature set), and return a ``Predictor`` wrapping it. Until a trained model exists the
-placeholder is returned.
+``load_predictor()`` returns the placeholder; the worker uses ``PredictorHolder`` (registry.py),
+which swaps in the registry's active trained model and falls back to the placeholder if no
+model is active or its artifact cannot be loaded.
 """
 
 from __future__ import annotations

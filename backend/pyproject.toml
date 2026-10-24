@@ -23,7 +23,11 @@ dependencies = [
   "pandas>=2.2",
   "numpy>=1.26",
   "pyyaml>=6.0",
+  "scikit-learn>=1.5",
+  "lightgbm>=4.5",
+  "joblib>=1.4",
   "sentinelbi-ml",
+  "reportlab>=5.1.0",
 ]
 
 [dependency-groups]
@@ -52,7 +56,7 @@ mypy_path = ["$MYPY_CONFIG_FILE_DIR", "$MYPY_CONFIG_FILE_DIR/../collector"]
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = ["netflow.*", "sentinelbi_ml.*"]
+module = ["netflow.*", "sentinelbi_ml.*", "joblib.*", "xgboost.*", "lightgbm.*", "sklearn.*", "reportlab.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

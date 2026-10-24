@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError, ResponseError
@@ -16,8 +17,9 @@ from app.core.heartbeat import beat
 from app.core.logging import configure_logging
 from app.core.redis import get_redis
 from app.db.session import get_sessionmaker
-from app.services.inference.model_loader import load_predictor
 from app.services.inference.predictor import Predictor
+from app.services.inference.registry import PredictorHolder
+from app.services.risk.aggregate import active_org_ids, snapshot_org
 from app.workers.pipeline import Message, process_messages
 
 log = logging.getLogger("worker")
@@ -110,21 +112,39 @@ async def _handle(
     return len(messages)
 
 
+async def snapshot_risk(sessionmaker: async_sessionmaker[AsyncSession]) -> int:
+    """Store a risk snapshot for every organisation with alerts in the last 24 h (trend charts)."""
+    now = datetime.now(UTC)
+    async with sessionmaker() as session:
+        org_ids = await active_org_ids(session, now)
+        for org_id in org_ids:
+            await snapshot_org(session, org_id, now)
+        await session.commit()
+    return len(org_ids)
+
+
 async def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
-    redis, sessionmaker, predictor = get_redis(), get_sessionmaker(), load_predictor()
+    redis, sessionmaker = get_redis(), get_sessionmaker()
+    holder = PredictorHolder(settings.model_refresh_seconds)
+    await holder.refresh(sessionmaker, force=True)
     consumer = f"worker-{uuid.uuid4().hex[:8]}"
     await ensure_group(redis, settings)
-    log.info("worker %s started, model=%s", consumer, predictor.version)
+    log.info("worker %s started, model=%s", consumer, holder.predictor.version)
     last_reclaim = 0.0
+    last_snapshot = 0.0
     while True:
         beat()
         try:
-            await consume_once(redis, sessionmaker, predictor, settings, consumer)
+            await holder.refresh(sessionmaker)
+            await consume_once(redis, sessionmaker, holder.predictor, settings, consumer)
             if time.monotonic() - last_reclaim > _RECLAIM_EVERY_S:
                 last_reclaim = time.monotonic()
-                await reclaim_once(redis, sessionmaker, predictor, settings, consumer)
+                await reclaim_once(redis, sessionmaker, holder.predictor, settings, consumer)
+            if time.monotonic() - last_snapshot > settings.risk_snapshot_seconds:
+                last_snapshot = time.monotonic()
+                await snapshot_risk(sessionmaker)
         except (RedisError, OSError):
             log.exception("redis/db unavailable; backing off")
             await asyncio.sleep(2)

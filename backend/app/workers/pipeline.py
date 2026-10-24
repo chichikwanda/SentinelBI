@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -23,9 +24,15 @@ from app.core.config import Settings
 from app.core.enums import SourceStatus
 from app.db.models import Source, flows, predictions
 from app.schemas.ingest import FlowIn
-from app.services.alerting import group_flagged, upsert_alert, window_count
+from app.services.alerting import (
+    add_window_totals,
+    group_flagged,
+    upsert_alert,
+    window_count,
+)
 from app.services.features.builder import records_to_frame, serving_features
 from app.services.inference.predictor import Predictor, classify
+from app.services.prescriptive.service import sync_recommendations
 from app.services.privacy import pseudonymize_ip
 from sentinelbi_ml.features import BENIGN
 
@@ -103,7 +110,8 @@ async def _persist_and_alert(
         rec["ts"] = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
         records.append(rec)
 
-    result = classify(predictor, serving_features(records_to_frame(records)))
+    feats = serving_features(records_to_frame(records))
+    result = classify(predictor, feats)
 
     flow_rows = [
         {
@@ -175,24 +183,40 @@ async def _persist_and_alert(
             "label": label,
             "probability": float(prob),
             "bytes": (row["in_bytes"] or 0) + (row["out_bytes"] or 0),
+            "row_index": i,
         }
-        for row, label, prob in zip(flow_rows, result.labels, result.confidence, strict=True)
+        for i, (row, label, prob) in enumerate(
+            zip(flow_rows, result.labels, result.confidence, strict=True)
+        )
         if row["flow_ref"] in new_refs
         and label != BENIGN
         and prob >= settings.alert_min_probability
     ]
+    # Totals for EVERY new flow per (org, source IP): the share gate below needs the denominator.
+    totals = Counter((r["org_id"], r["src_ip"]) for r in flow_rows if r["flow_ref"] in new_refs)
+    window_totals = await add_window_totals(redis, dict(totals), settings)
+    explain = getattr(predictor, "explain", None)
+    classes = list(predictor.classes)
+
     touched = 0
     for group in group_flagged(flagged, crit):
         in_window = await window_count(redis, group, settings)
-        if in_window >= settings.alert_min_flows:
-            await upsert_alert(
+        total = max(window_totals.get((group.org_id, group.src_ip), in_window), in_window)
+        if in_window >= settings.alert_min_flows and in_window / total >= settings.alert_min_share:
+            top = None
+            if callable(explain) and group.best_index is not None:
+                top = explain(feats.iloc[[group.best_index]], classes.index(group.attack_class))
+            alert = await upsert_alert(
                 session,
                 group,
                 model_version=predictor.version,
                 in_window=in_window,
                 now=now,
                 settings=settings,
+                total_in_window=total,
+                top_features=top,
             )
+            await sync_recommendations(session, alert)
             touched += 1
     return len(new_refs), touched
 

@@ -19,6 +19,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 _ADMIN_URL = os.environ.setdefault(
@@ -88,6 +89,15 @@ async def _dispose_engine() -> AsyncIterator[None]:
 async def _clean_redis() -> None:
     """Redis db 1 is dedicated to tests; start every test with an empty stream/counters."""
     await get_redis().flushdb()
+
+
+@pytest.fixture(autouse=True)
+async def _clean_model_registry() -> None:
+    """The registry is global (not per tenant): start every test with it empty, so a test that
+    registers or activates a model cannot change what another test sees."""
+    async with get_sessionmaker()() as session:
+        await session.execute(text("DELETE FROM model_registry"))
+        await session.commit()
 
 
 @pytest.fixture

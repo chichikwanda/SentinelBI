@@ -41,9 +41,20 @@ class Settings(BaseSettings):
 
     # Alerting (placeholder-classifier era; revisited with the real model in Phase 2/4)
     alert_min_probability: float = 0.7
+    # a source's flagged flows must also be at least this share of ALL its flows in the window,
+    # so a busy benign host with a ~1% false-positive rate does not raise alerts
+    alert_min_share: float = 0.2
     alert_min_flows: int = 5
     alert_window_seconds: int = 60
     alert_merge_seconds: int = 300
+
+    # Models and risk
+    models_dir: str = "/repo/ml/models"
+    model_refresh_seconds: int = 30
+    risk_snapshot_seconds: int = 60
+    risk_decay_half_life_hours: float = 6.0
+    # comma-separated emails allowed to switch the PLATFORM-WIDE active model
+    platform_admin_emails: str = ""
 
     # Privacy
     pseudonymize_ips: bool = False
@@ -63,6 +74,8 @@ class Settings(BaseSettings):
                 problems.append("SECRET_KEY must be set to a random value of >= 32 chars")
             if self.pseudonym_key.get_secret_value().startswith(INSECURE_SECRET_PREFIX):
                 problems.append("PSEUDONYM_KEY must be set in prod")
+            if "demo.sentinelbi.example" in self.platform_admin_emails:
+                problems.append("PLATFORM_ADMIN_EMAILS must not contain the demo account in prod")
             if self.seed_demo_data:
                 problems.append("SEED_DEMO_DATA must be false in prod")
             if problems:

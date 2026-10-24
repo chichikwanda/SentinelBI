@@ -41,6 +41,8 @@ class FlaggedGroup:
     dst_ports: set[int] = field(default_factory=set)
     bytes_total: int = 0
     flow_refs: list[str] = field(default_factory=list)
+    best_index: int | None = None  # row of the most confident flow (for explanations)
+    best_probability: float = 0.0
 
 
 def group_flagged(
@@ -61,6 +63,8 @@ def group_flagged(
                 criticality=criticality.get(r["source_id"], 2),
             )
         g.n += 1
+        if float(r["probability"]) > g.best_probability and "row_index" in r:
+            g.best_probability, g.best_index = float(r["probability"]), int(r["row_index"])
         g.max_probability = max(g.max_probability, float(r["probability"]))
         g.first_ts = r["ts"] if g.first_ts is None else min(g.first_ts, r["ts"])
         g.last_ts = r["ts"] if g.last_ts is None else max(g.last_ts, r["ts"])
@@ -82,16 +86,41 @@ async def window_count(redis: Redis, group: FlaggedGroup, settings: Settings) ->
     return int(result[0])
 
 
+async def add_window_totals(
+    redis: Redis, totals: dict[tuple[uuid.UUID, str], int], settings: Settings
+) -> dict[tuple[uuid.UUID, str], int]:
+    """Count ALL flows (not just flagged ones) per (org, source IP) in the fixed window."""
+    if not totals:
+        return {}
+    keys = list(totals)
+    pipe = redis.pipeline(transaction=True)
+    for org_id, src_ip in keys:
+        key = f"win:tot:{org_id}:{src_ip}"
+        pipe.incrby(key, totals[(org_id, src_ip)])
+        pipe.expire(key, settings.alert_window_seconds, nx=True)
+    result = await pipe.execute()
+    return {k: int(result[2 * i]) for i, k in enumerate(keys)}
+
+
 def _merge_evidence(
-    old: dict[str, Any], group: FlaggedGroup, model_version: str, in_window: int, settings: Settings
+    old: dict[str, Any],
+    group: FlaggedGroup,
+    model_version: str,
+    in_window: int,
+    settings: Settings,
+    total_in_window: int | None = None,
+    top_features: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     def union(prev: list[Any], new: Iterable[Any], limit: int) -> list[Any]:
         return sorted({*prev, *new}, key=str)[:limit]
 
     return {
         "model_version": model_version,
+        "criticality": group.criticality,
         "window_seconds": settings.alert_window_seconds,
         "flows_in_window": in_window,
+        "all_flows_in_window": total_in_window,
+        "top_features": top_features if top_features is not None else old.get("top_features"),
         "bytes_total": int(old.get("bytes_total", 0)) + group.bytes_total,
         "dst_ips_sample": union(old.get("dst_ips_sample", []), group.dst_ips, EVIDENCE_SAMPLE),
         "dst_ports_sample": union(
@@ -112,6 +141,8 @@ async def upsert_alert(
     in_window: int,
     now: datetime,
     settings: Settings,
+    total_in_window: int | None = None,
+    top_features: list[dict[str, Any]] | None = None,
 ) -> Alert:
     assert group.first_ts is not None and group.last_ts is not None  # noqa: S101 - n >= 1
     # Serialise concurrent workers touching the same group.
@@ -139,6 +170,7 @@ async def upsert_alert(
     if existing is None:
         alert = Alert(
             org_id=group.org_id,
+            source_id=group.source_id,
             first_seen=group.first_ts,
             last_seen=group.last_ts,
             attack_class=group.attack_class,
@@ -148,7 +180,9 @@ async def upsert_alert(
             count=max(group.n, in_window),
             src_ip=group.src_ip,
             dst_ip=next(iter(group.dst_ips)) if len(group.dst_ips) == 1 else None,
-            evidence=_merge_evidence({}, group, model_version, in_window, settings),
+            evidence=_merge_evidence(
+                {}, group, model_version, in_window, settings, total_in_window, top_features
+            ),
             status=AlertStatus.NEW.value,
         )
         session.add(alert)
@@ -163,7 +197,7 @@ async def upsert_alert(
     if existing.dst_ip is not None and group.dst_ips != {str(existing.dst_ip)}:
         existing.dst_ip = None  # more than one target now
     existing.evidence = _merge_evidence(
-        existing.evidence, group, model_version, in_window, settings
+        existing.evidence, group, model_version, in_window, settings, total_in_window, top_features
     )
     await session.flush()
     return existing
