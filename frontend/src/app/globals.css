@@ -24,3 +24,35 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
 }
+
+/* ---- chart tokens (validated default data-viz palette; slots 1-2 only) ---- */
+.viz-root {
+  color-scheme: light;
+  --viz-ink: #0b0b0b;
+  --viz-ink-2: #52514e;
+  --viz-muted: #898781;
+  --viz-grid: #e1e0d9;
+  --viz-axis: #c3c2b7;
+  --viz-surface: #fcfcfb;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --div-neg: #e34948; /* diverging pair: blue (series-1) <-> red */
+  /* status colours are reserved for severity and always ship with a text label */
+  --sev-critical: #d03b3b;
+  --sev-high: #ec835a;
+  --sev-medium: #fab219;
+  --sev-low: #898781;
+}
+@media (prefers-color-scheme: dark) {
+  .viz-root {
+    color-scheme: dark;
+    --viz-ink: #f0efec;
+    --viz-ink-2: #c3c2b7;
+    --viz-grid: #2c2c2a;
+    --viz-axis: #383835;
+    --viz-surface: #1a1a19;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --div-neg: #e66767;
+  }
+}

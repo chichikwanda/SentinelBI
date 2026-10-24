@@ -15,16 +15,24 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <div className="flex min-h-screen flex-col">
       <header className="border-b border-black/10 dark:border-white/15">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <nav className="flex items-center gap-6 text-sm">
+          <nav className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
             <Link href="/dashboard" className="text-base font-semibold">
               SentinelBI
             </Link>
-            <Link href="/dashboard" className="hover:underline">
-              Dashboard
-            </Link>
-            <Link href="/sources/new" className="hover:underline">
-              Add source
-            </Link>
+            {[
+              ["/dashboard", "Dashboard"],
+              ["/alerts", "Alerts"],
+              ["/recommendations", "Actions"],
+              ["/risk", "Risk"],
+              ["/models", "Models"],
+              ["/reports", "Reports"],
+              ["/evaluation", "Evaluate"],
+              ["/sources/new", "Add source"],
+            ].map(([href, label]) => (
+              <Link key={href} href={href} className="hover:underline">
+                {label}
+              </Link>
+            ))}
           </nav>
           <LogoutButton />
         </div>

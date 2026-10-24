@@ -40,7 +40,12 @@ async function forward(req: Request, ctx: Ctx) {
   const upstream = await fetch(target, init);
   return new Response(upstream.body, {
     status: upstream.status,
-    headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
+    headers: {
+      "content-type": upstream.headers.get("content-type") ?? "application/json",
+      ...(upstream.headers.get("content-disposition")
+        ? { "content-disposition": upstream.headers.get("content-disposition") as string }
+        : {}),
+    },
   });
 }
 
