@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import time
 from dataclasses import dataclass
 
 
@@ -21,9 +22,9 @@ class Rec:
     last: int = 99_000
 
 
-def v5_packet(
-    records: list[Rec], *, uptime: int = 100_000, unix_secs: int = 1_760_000_000
-) -> bytes:
+def v5_packet(records: list[Rec], *, uptime: int = 100_000, unix_secs: int | None = None) -> bytes:
+    unix_secs = int(time.time()) if unix_secs is None else unix_secs  # current time by default:
+    # old timestamps fall outside the 30-day retention window and get dropped in the background
     header = struct.pack("!HHIIIIBBH", 5, len(records), uptime, unix_secs, 0, 1, 0, 0, 0)
     body = b"".join(
         struct.pack(
@@ -105,9 +106,10 @@ def v9_packet(
     *,
     with_template: bool = True,
     uptime: int = 100_000,
-    unix_secs: int = 1_760_000_000,
+    unix_secs: int | None = None,
 ) -> bytes:
     flowsets = (v9_template_flowset() if with_template else b"") + v9_data_flowset(records)
     count = len(records) + (1 if with_template else 0)
+    unix_secs = int(time.time()) if unix_secs is None else unix_secs
     header = struct.pack("!HHIIII", 9, count, uptime, unix_secs, 1, 0)
     return header + flowsets

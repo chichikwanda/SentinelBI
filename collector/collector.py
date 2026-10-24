@@ -22,6 +22,7 @@ import redis.asyncio as aioredis
 
 from allowlist import ExporterAllowlist, load_sources
 from normalize import normalize_packet
+from pairing import FlowPairer, Item
 
 log = logging.getLogger("collector")
 
@@ -32,6 +33,8 @@ QUEUE_SIZE = int(os.environ.get("QUEUE_SIZE", "10000"))
 REFRESH_S = float(os.environ.get("ALLOWLIST_REFRESH_S", "30"))
 HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", "/tmp/healthy")  # noqa: S108
 UNKNOWN_LOG_EVERY_S = 60.0
+# Reverse-direction records are merged into one bidirectional flow (ADR-015); 0 disables.
+PAIRING_HOLD_S = float(os.environ.get("PAIRING_HOLD_S", "10"))
 
 
 class Stats:
@@ -41,9 +44,15 @@ class Stats:
 
 
 class Collector(asyncio.DatagramProtocol):
-    def __init__(self, allowlist: ExporterAllowlist, redis: aioredis.Redis | None) -> None:
+    def __init__(
+        self,
+        allowlist: ExporterAllowlist,
+        redis: aioredis.Redis | None,
+        pairer: FlowPairer | None = None,
+    ) -> None:
         self.allowlist = allowlist
         self.redis = redis
+        self.pairer = pairer if pairer is not None else FlowPairer(PAIRING_HOLD_S)
         self.queue: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=QUEUE_SIZE)
         self.stats = Stats()
         self.last_progress = time.monotonic()
@@ -86,25 +95,38 @@ class Collector(asyncio.DatagramProtocol):
             self.stats.parse_errors += 1
             log.debug("unparseable packet from %s: %s", exporter_ip, type(exc).__name__)
             return 0
-        if not records or self.redis is None:
+        if not records:
             return 0
         source = resolution.source
+        items: list[Item] = []
+        for rec in records:
+            items.extend(self.pairer.add(source.org_id, source.source_id, rec))
+        return await self._push(items)
+
+    async def _push(self, items: list[Item]) -> int:
+        """Write ready flows to the stream; returns how many were written."""
+        if not items or self.redis is None:
+            return 0
         try:
             pipe = self.redis.pipeline(transaction=False)
-            for rec in records:
+            for item in items:
                 pipe.xadd(
                     STREAM,
-                    {"org": source.org_id, "src": source.source_id, "data": json.dumps(rec)},
+                    {"org": item.org_id, "src": item.source_id, "data": json.dumps(item.record)},
                     maxlen=STREAM_MAXLEN,
                     approximate=True,
                 )
             await pipe.execute()
         except Exception:
             self.stats.redis_errors += 1
-            log.exception("could not queue %d flows", len(records))
+            log.exception("could not queue %d flows", len(items))
             return 0
-        self.stats.flows_out += len(records)
-        return len(records)
+        self.stats.flows_out += len(items)
+        return len(items)
+
+    async def flush_pending(self, force: bool = False) -> int:
+        """Emit unpaired records whose hold expired (all of them when ``force``)."""
+        return await self._push(self.pairer.flush_expired(force=force))
 
     async def run_consumer(self) -> None:
         while True:
@@ -114,6 +136,12 @@ class Collector(asyncio.DatagramProtocol):
             except TimeoutError:
                 continue  # idle tick keeps the heartbeat alive
             await self.handle(data, exporter)
+
+
+async def flush_loop(collector: Collector) -> None:
+    while True:
+        await asyncio.sleep(1.0)
+        await collector.flush_pending()
 
 
 async def refresh_allowlist(allowlist: ExporterAllowlist, dsn: str) -> None:
@@ -164,6 +192,7 @@ async def main() -> None:
     await asyncio.gather(
         refresh_allowlist(allowlist, os.environ["DATABASE_URL"]),
         collector.run_consumer(),
+        flush_loop(collector),
         heartbeat(collector),
         report(collector),
     )
