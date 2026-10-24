@@ -25,7 +25,6 @@ function Comparison({ validation }: { validation: Record<string, EvalMetrics> })
           <Th className="text-right">Attack recall</Th>
           <Th className="text-right">False alarms</Th>
           <Th className="text-right">Train (s)</Th>
-          <Th className="text-right">ms / 500 flows*</Th>
         </tr>
       </thead>
       <tbody>
@@ -37,7 +36,6 @@ function Comparison({ validation }: { validation: Record<string, EvalMetrics> })
             <Td className="text-right tabular-nums">{pct(m.attack_detection_rate)}</Td>
             <Td className="text-right tabular-nums">{pct(m.false_alarm_rate)}</Td>
             <Td className="text-right tabular-nums">{m.train_seconds ?? "–"}</Td>
-            <Td className="text-right tabular-nums">{m.latency_ms_per_500_flows ?? "–"}</Td>
           </tr>
         ))}
       </tbody>
@@ -64,6 +62,12 @@ function ModelDetail({ model }: { model: ModelRow }) {
               <div><dt className="text-xs text-black/55 dark:text-white/55">False-alarm rate</dt><dd className="tabular-nums">{pct(t.false_alarm_rate)}</dd></div>
               <div><dt className="text-xs text-black/55 dark:text-white/55">ROC-AUC (OvR)</dt><dd className="tabular-nums">{num(t.roc_auc_ovr_macro)}</dd></div>
             </dl>
+            {model.metrics.latency_ms_per_500_flows != null && (
+              <p className="mt-2 text-xs text-black/60 dark:text-white/60" data-testid="serving-latency">
+                Serving latency: {model.metrics.latency_ms_per_500_flows} ms per 500 flows
+                {model.metrics.latency_conditions ? ` (${model.metrics.latency_conditions})` : ""}.
+              </p>
+            )}
           </div>
           <div>
             <h3 className="mb-1 text-sm font-semibold">Per class (test)</h3>
@@ -91,8 +95,7 @@ function ModelDetail({ model }: { model: ModelRow }) {
           <h3 className="mb-1 text-sm font-semibold">Algorithm comparison (validation split; the model above was chosen on macro-F1)</h3>
           <Comparison validation={model.metrics.validation} />
           <p className="mt-1 text-xs text-black/55 dark:text-white/55">
-            * measured while training with several threads on a busy machine; the serving-path latency
-            is the &quot;latency&quot; shown in the table above.
+            Training-time latencies are not shown: they were measured under load and are not comparable.
           </p>
         </div>
       )}

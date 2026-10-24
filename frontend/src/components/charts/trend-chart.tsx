@@ -48,7 +48,14 @@ export function TrendChart({ points }: { points: { t: string; score: number }[] 
         {line && <path d={line} fill="none" stroke="var(--series-1)" strokeWidth={2} strokeLinejoin="round" />}
         {points.map((p, i) =>
           i % step === 0 ? (
-            <text key={p.t} x={xs[i]} y={H - 8} textAnchor="middle" fontSize={10} fill="var(--viz-muted)">
+            <text
+              key={p.t}
+              x={xs[i]}
+              y={H - 8}
+              textAnchor={xs[i] > W - M.right - 24 ? "end" : xs[i] < M.left + 24 ? "start" : "middle"}
+              fontSize={10}
+              fill="var(--viz-muted)"
+            >
               {formatClock(p.t)}
             </text>
           ) : null,

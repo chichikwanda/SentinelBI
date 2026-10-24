@@ -173,6 +173,7 @@ export interface ModelRow {
     test?: EvalMetrics;
     validation?: Record<string, EvalMetrics>;
     latency_ms_per_500_flows?: number | null;
+    latency_conditions?: string | null;
     classes?: string[];
     limitations?: string[];
     training?: { splits?: Record<string, number>; not_done?: string[]; models_compared?: string[] };

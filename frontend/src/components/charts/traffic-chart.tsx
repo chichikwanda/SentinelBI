@@ -101,7 +101,14 @@ export function TrafficChart({
         {line && <path d={line} fill="none" stroke="var(--series-1)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />}
 
         {ticksX.map(({ i, label }) => (
-          <text key={i} x={xs[i]} y={M.top + PLOT_H + 16} textAnchor="middle" fontSize={10} fill="var(--viz-muted)">
+          <text
+            key={i}
+            x={xs[i]}
+            y={M.top + PLOT_H + 16}
+            textAnchor={xs[i] > W - M.right - 24 ? "end" : xs[i] < M.left + 24 ? "start" : "middle"}
+            fontSize={10}
+            fill="var(--viz-muted)"
+          >
             {label}
           </text>
         ))}

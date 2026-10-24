@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { BarList } from "@/components/charts/bar-list";
+import { BarList, type BarItem } from "@/components/charts/bar-list";
 import { RiskGauge } from "@/components/charts/risk-gauge";
 import { TrafficChart } from "@/components/charts/traffic-chart";
 import { HealthPill } from "@/components/health-pill";
@@ -32,6 +32,25 @@ const WINDOWS = [
   { label: "24 hours", minutes: 1440 },
 ];
 const SEVERITIES: Severity[] = ["Critical", "High", "Medium", "Low"];
+
+/** Real traffic can carry dozens of IP protocol numbers: keep the biggest few and fold the
+ *  rest into one "Other" bar so the card stays readable. */
+function foldProtocols(rows: ProtocolShare[], keep = 6): BarItem[] {
+  const items: BarItem[] = rows.slice(0, keep).map((p) => ({
+    label: p.protocol,
+    value: p.flows,
+    detail: `${p.protocol}: ${formatNumber(p.flows)} flows, ${formatBytes(p.bytes)}`,
+  }));
+  const rest = rows.slice(keep);
+  if (rest.length > 0) {
+    items.push({
+      label: `Other (${rest.length} protocols)`,
+      value: rest.reduce((sum, p) => sum + p.flows, 0),
+      detail: rest.map((p) => p.protocol).join(", "),
+    });
+  }
+  return items;
+}
 
 function LiveDot({ active }: { active: boolean }) {
   return (
@@ -226,14 +245,7 @@ export default function DashboardPage() {
             <CardTitle>Protocols (flows)</CardTitle>
           </CardHeader>
           <CardContent>
-            <BarList
-              items={(protocols.data ?? []).map((p) => ({
-                label: p.protocol,
-                value: p.flows,
-                detail: `${p.protocol}: ${formatNumber(p.flows)} flows, ${formatBytes(p.bytes)}`,
-              }))}
-              format={formatNumber}
-            />
+            <BarList items={foldProtocols(protocols.data ?? [])} format={formatNumber} />
           </CardContent>
         </Card>
         <Card>

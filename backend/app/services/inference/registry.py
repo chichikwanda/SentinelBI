@@ -47,6 +47,7 @@ async def register_from_card(
         "test": card["metrics"]["test"],
         "validation": card["metrics"]["validation_selection"],
         "latency_ms_per_500_flows": card.get("latency_ms_per_500_flows"),
+        "latency_conditions": card.get("latency_conditions"),
         "classes": card["classes"],
         "limitations": card["limitations"],
         "training": card["training"],
