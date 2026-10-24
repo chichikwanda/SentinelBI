@@ -61,7 +61,7 @@ ambiguous exporters are dropped and logged ([ADR-005](docs/DECISIONS.md)).
 ## Test
 
 ```bash
-make test        # pytest in the Linux dev image against a throwaway database (74 tests)
+make test        # pytest in the Linux dev image against a throwaway database
 make lint        # ruff + ruff format --check + mypy (strict)
 make e2e         # Playwright smoke test against the running stack
 ```

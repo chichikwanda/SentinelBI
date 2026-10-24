@@ -139,6 +139,14 @@ async def test_alert_waits_for_enough_flagged_flows_across_batches(
     (merged,) = await alerts_for(client, tenant)  # merged into the open alert, not duplicated
     assert merged["id"] == alert["id"]
     assert merged["count"] == 10
+    assert merged["dst_ip"] == "10.20.0.10"  # same single target across merges is preserved
+
+    # a second target turns it into a multi-target alert
+    await ingest(client, tenant, scan_flows(3, dst="10.20.0.20"))
+    await drain(redis, sessionmaker, settings)
+    (multi,) = await alerts_for(client, tenant)
+    assert multi["id"] == alert["id"]
+    assert multi["dst_ip"] is None
 
 
 async def test_redelivery_is_idempotent(
@@ -273,3 +281,39 @@ async def test_unknown_org_uuid_in_stream_does_not_create_data_for_others(
         await scalar(sessionmaker, "SELECT count(*) FROM flows WHERE org_id = :o", o=tenant.org_id)
         == 0
     )
+
+
+async def test_pending_messages_of_a_crashed_consumer_are_reclaimed(
+    client: httpx.AsyncClient,
+    tenant: Tenant,
+    redis: Redis,
+    sessionmaker: Any,
+    settings: Settings,
+) -> None:
+    from app.workers.stream_consumer import reclaim_once
+
+    await ingest(client, tenant, scan_flows(8))
+    await ensure_group(redis, settings)
+    # "crashed" consumer: reads the batch, never processes or acks it
+    await redis.xreadgroup(
+        settings.stream_group, "crashed", {settings.stream_flows: ">"}, count=100
+    )
+    assert (await redis.xpending(settings.stream_flows, settings.stream_group))["pending"] == 8
+    assert (
+        await scalar(sessionmaker, "SELECT count(*) FROM flows WHERE org_id = :o", o=tenant.org_id)
+        == 0
+    )
+
+    patient = settings.model_copy(update={"worker_reclaim_idle_ms": 60_000})
+    assert (
+        await reclaim_once(redis, sessionmaker, PREDICTOR, patient, "rescuer") == 0
+    )  # not idle long enough
+
+    eager = settings.model_copy(update={"worker_reclaim_idle_ms": 0})
+    assert await reclaim_once(redis, sessionmaker, PREDICTOR, eager, "rescuer") == 8
+    assert (
+        await scalar(sessionmaker, "SELECT count(*) FROM flows WHERE org_id = :o", o=tenant.org_id)
+        == 8
+    )
+    assert (await redis.xpending(settings.stream_flows, settings.stream_group))["pending"] == 0
+    assert len(await alerts_for(client, tenant)) == 1
