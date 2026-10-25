@@ -35,3 +35,5 @@ class FlowBatch(BaseModel):
 
 class IngestAccepted(BaseModel):
     accepted: int
+    # present (true) only when this exact batch had already been received: a resend, not new data
+    duplicate: bool | None = None
