@@ -102,12 +102,13 @@ async def _handle(
     if result.acked:
         await redis.xack(settings.stream_flows, settings.stream_group, *result.acked)
     log.info(
-        "batch msgs=%d inserted=%d dead=%d alerts=%d ms=%.0f",
+        "batch msgs=%d inserted=%d dead=%d alerts=%d ms=%.0f [%s]",
         len(messages),
         result.inserted,
         result.dead,
         result.alerts_touched,
         (time.perf_counter() - started) * 1000,
+        " ".join(f"{name}={ms:.0f}" for name, ms in result.stages.items()),
     )
     return len(messages)
 

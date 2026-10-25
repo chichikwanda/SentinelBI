@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     secret_key: SecretStr
     access_token_minutes: int = 60
     allow_registration: bool = True  # open org sign-up; disable on a public deployment
+    # sign-in: this many FAILED attempts on one account lock it for the window (a success resets it)
+    login_max_failures: int = 8
+    login_lockout_seconds: int = 900
+    # open sign-up: at most this many organisations per hour across the whole deployment
+    register_max_per_hour: int = 20
 
     # What the onboarding wizard tells users to point their router at.
     collector_public_host: str = "localhost"
@@ -35,7 +40,10 @@ class Settings(BaseSettings):
     stream_dead: str = "flows.dead"
     stream_group: str = "workers"
     stream_maxlen: int = 500_000
-    worker_batch_size: int = 500
+    # Alert work is per source and class per batch, not per flow, so bigger batches are cheaper per
+    # flow: on attack-heavy replay traffic one worker drained 786 flows/s at 500, 1,441 at 2,000.
+    # Under light load a batch is just whatever has arrived, so latency does not grow.
+    worker_batch_size: int = 2000
     worker_block_ms: int = 1000
     worker_reclaim_idle_ms: int = 60_000
 

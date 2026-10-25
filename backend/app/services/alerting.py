@@ -9,7 +9,7 @@ the group is merged into an existing open alert for the same (org, src_ip, class
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -76,14 +76,23 @@ def group_flagged(
     return list(groups.values())
 
 
-async def window_count(redis: Redis, group: FlaggedGroup, settings: Settings) -> int:
-    """Add the group's flows to its fixed-window counter and return the running total."""
-    key = f"win:{group.org_id}:{group.src_ip}:{group.attack_class}"
+async def window_counts(
+    redis: Redis, groups: Sequence[FlaggedGroup], settings: Settings
+) -> list[int]:
+    """Add each group's flows to its fixed-window counter; return the running totals, in order.
+
+    One pipeline for the whole batch instead of one round trip per group. Each group has its own
+    key, so the totals are the same as counting them one at a time.
+    """
+    if not groups:
+        return []
     pipe = redis.pipeline(transaction=True)
-    pipe.incrby(key, group.n)
-    pipe.expire(key, settings.alert_window_seconds, nx=True)
+    for group in groups:
+        key = f"win:{group.org_id}:{group.src_ip}:{group.attack_class}"
+        pipe.incrby(key, group.n)
+        pipe.expire(key, settings.alert_window_seconds, nx=True)
     result = await pipe.execute()
-    return int(result[0])
+    return [int(result[2 * i]) for i in range(len(groups))]
 
 
 async def add_window_totals(

@@ -238,6 +238,38 @@ async def test_poison_message_that_fails_in_the_database_is_isolated(
     assert (await redis.xpending(settings.stream_flows, settings.stream_group))["pending"] == 0
 
 
+async def test_a_transient_database_failure_is_retried_as_a_whole_batch(
+    client: httpx.AsyncClient,
+    tenant: Tenant,
+    redis: Redis,
+    sessionmaker: Any,
+    settings: Settings,
+    monkeypatch: Any,
+) -> None:
+    import app.workers.pipeline as pipeline
+
+    await ingest(client, tenant, scan_flows(8))
+    real = pipeline._persist_and_alert
+    calls: list[int] = []
+
+    async def flaky(*args: Any, **kwargs: Any) -> tuple[int, int]:
+        calls.append(len(args[4]))  # the batch size this attempt was given
+        if len(calls) == 1:
+            raise RuntimeError("deadlock detected")  # a failure that clears on the second try
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_persist_and_alert", flaky)
+    await drain(redis, sessionmaker, settings)
+
+    assert calls == [8, 8]  # the whole batch twice, not eight single-message transactions
+    assert (
+        await scalar(sessionmaker, "SELECT count(*) FROM flows WHERE org_id = :o", o=tenant.org_id)
+        == 8
+    )
+    assert await redis.xlen(settings.stream_dead) == 0
+    assert (await redis.xpending(settings.stream_flows, settings.stream_group))["pending"] == 0
+
+
 async def test_pseudonymization_masks_internal_addresses_only(
     client: httpx.AsyncClient,
     tenant: Tenant,

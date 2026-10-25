@@ -9,26 +9,29 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from redis.asyncio import Redis
 from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.enums import SourceStatus
+from app.db.bulk import insert_ignoring_conflicts
 from app.db.models import Source, flows, predictions
 from app.schemas.ingest import FlowIn
 from app.services.alerting import (
     add_window_totals,
     group_flagged,
     upsert_alert,
-    window_count,
+    window_counts,
 )
 from app.services.features.builder import records_to_frame, serving_features
 from app.services.inference.predictor import Predictor, classify
@@ -48,6 +51,17 @@ class BatchResult:
     inserted: int = 0
     dead: int = 0
     alerts_touched: int = 0
+    # milliseconds spent per stage, summed over the batch (logged to show where time goes)
+    stages: dict[str, float] = field(default_factory=dict)
+
+
+@contextmanager
+def _timed(stages: dict[str, float], name: str) -> Iterator[None]:
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        stages[name] = stages.get(name, 0.0) + (time.perf_counter() - started) * 1000
 
 
 @dataclass
@@ -95,6 +109,7 @@ async def _persist_and_alert(
     predictor: Predictor,
     settings: Settings,
     parsed: list[_Parsed],
+    stages: dict[str, float],
 ) -> tuple[int, int]:
     now = datetime.now(UTC)
     key = settings.pseudonym_key.get_secret_value().encode()
@@ -110,8 +125,10 @@ async def _persist_and_alert(
         rec["ts"] = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
         records.append(rec)
 
-    feats = serving_features(records_to_frame(records))
-    result = classify(predictor, feats)
+    with _timed(stages, "features"):
+        feats = serving_features(records_to_frame(records))
+    with _timed(stages, "predict"):
+        result = classify(predictor, feats)
 
     flow_rows = [
         {
@@ -136,14 +153,18 @@ async def _persist_and_alert(
     ]
 
     new_refs: set[str] = set()
-    for i in range(0, len(flow_rows), _CHUNK):
-        stmt = (
-            pg_insert(flows)
-            .values(flow_rows[i : i + _CHUNK])
-            .on_conflict_do_nothing(index_elements=["org_id", "flow_ref", "ts"])
-            .returning(flows.c.flow_ref)
-        )
-        new_refs.update(r[0] for r in await session.execute(stmt))
+    # bulk.py explains why rows are sent as column arrays instead of an inlined VALUES list
+    with _timed(stages, "flows"):
+        for i in range(0, len(flow_rows), _CHUNK):
+            new_refs.update(
+                await insert_ignoring_conflicts(
+                    session,
+                    flows,
+                    flow_rows[i : i + _CHUNK],
+                    conflict=["org_id", "flow_ref", "ts"],
+                    returning="flow_ref",
+                )
+            )
 
     pred_rows = [
         {
@@ -157,12 +178,14 @@ async def _persist_and_alert(
         for row, label, prob in zip(flow_rows, result.labels, result.confidence, strict=True)
         if row["flow_ref"] in new_refs
     ]
-    for i in range(0, len(pred_rows), _CHUNK):
-        await session.execute(
-            pg_insert(predictions)
-            .values(pred_rows[i : i + _CHUNK])
-            .on_conflict_do_nothing(index_elements=["org_id", "flow_ref", "model_version", "ts"])
-        )
+    with _timed(stages, "predictions"):
+        for i in range(0, len(pred_rows), _CHUNK):
+            await insert_ignoring_conflicts(
+                session,
+                predictions,
+                pred_rows[i : i + _CHUNK],
+                conflict=["org_id", "flow_ref", "model_version", "ts"],
+            )
 
     # Source health: arrival time, so the wizard can show "first flows received".
     for org_id, source_id in {(p.org_id, p.source_id) for p in parsed}:
@@ -177,6 +200,10 @@ async def _persist_and_alert(
         select(Source.id, Source.criticality).where(Source.id.in_(source_ids))
     )
     crit: dict[uuid.UUID, int] = {row[0]: row[1] for row in crit_rows}
+    # the model's calibrated threshold applies, but never below the operator's configured floor
+    threshold = max(
+        settings.alert_min_probability, getattr(predictor, "alert_threshold", None) or 0.0
+    )
     flagged = [
         {
             **row,
@@ -188,19 +215,18 @@ async def _persist_and_alert(
         for i, (row, label, prob) in enumerate(
             zip(flow_rows, result.labels, result.confidence, strict=True)
         )
-        if row["flow_ref"] in new_refs
-        and label != BENIGN
-        and prob >= settings.alert_min_probability
+        if row["flow_ref"] in new_refs and label != BENIGN and prob >= threshold
     ]
     # Totals for EVERY new flow per (org, source IP): the share gate below needs the denominator.
     totals = Counter((r["org_id"], r["src_ip"]) for r in flow_rows if r["flow_ref"] in new_refs)
+    alert_started = time.perf_counter()
     window_totals = await add_window_totals(redis, dict(totals), settings)
     explain = getattr(predictor, "explain", None)
     classes = list(predictor.classes)
 
     touched = 0
-    for group in group_flagged(flagged, crit):
-        in_window = await window_count(redis, group, settings)
+    groups = list(group_flagged(flagged, crit))
+    for group, in_window in zip(groups, await window_counts(redis, groups, settings), strict=True):
         total = max(window_totals.get((group.org_id, group.src_ip), in_window), in_window)
         if in_window >= settings.alert_min_flows and in_window / total >= settings.alert_min_share:
             top = None
@@ -218,6 +244,7 @@ async def _persist_and_alert(
             )
             await sync_recommendations(session, alert)
             touched += 1
+    stages["alerts"] = stages.get("alerts", 0.0) + (time.perf_counter() - alert_started) * 1000
     return len(new_refs), touched
 
 
@@ -241,16 +268,30 @@ async def process_messages(
 
     async def run(batch: list[_Parsed]) -> tuple[int, int]:
         async with sessionmaker() as session, session.begin():
-            return await _persist_and_alert(session, redis, predictor, settings, batch)
+            return await _persist_and_alert(
+                session, redis, predictor, settings, batch, result.stages
+            )
 
-    try:
-        inserted, touched = await run(parsed)
+    # A failed batch is first retried whole: transient database errors (a deadlock, a dropped
+    # connection) usually clear, and the per-message fallback below costs one transaction per
+    # message, which is slow for a large batch. The Redis window counters live outside the
+    # transaction, so a retry can count the batch's flows twice: that can only make an alert fire
+    # slightly early, never lose a flow.
+    done = False
+    for attempt in (1, 2):
+        try:
+            inserted, touched = await run(parsed)
+        except Exception:
+            log.exception("batch of %d failed (attempt %d of 2)", len(parsed), attempt)
+            continue
         result.inserted += inserted
         result.alerts_touched += touched
         result.acked.extend(p.msg_id for p in parsed)
-    except Exception:
+        done = True
+        break
+    if not done:
         # One poison message must not wedge the stream: retry individually, dead-letter the culprit.
-        log.exception("batch of %d failed; retrying message by message", len(parsed))
+        log.warning("retrying %d messages one by one", len(parsed))
         for p in parsed:
             try:
                 inserted, touched = await run([p])
