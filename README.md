@@ -87,21 +87,30 @@ Without `make` (e.g. Windows) run the underlying commands from the Makefile
 
 ### Onboard your own network
 
-`/sources/new` is the wizard. An IP address alone gives the platform no traffic, so it creates the
-source, shows a one-time API key and the collector address, and gives copy-paste router config
-(MikroTik, pfSense, Cisco) or an HTTP/curl example, then polls until the first flows arrive.
-NetFlow exporters are accepted only from the registered address (unknown or ambiguous exporters
-are dropped and logged, ADR-005); the collector pairs a router's one-record-per-direction output
-into bidirectional flows before scoring (ADR-015).
+**Quick start, no router setup.** Enter an IP address when you register (or on the dashboard, or in the
+wizard at `/sources/new`) and you get one command to run on that machine: the SentinelBI **sensor**, a
+single Python file that reads packet headers (never contents), builds flow records and reports them
+(`sensor/README.md`). A server cannot see an arbitrary IP's traffic from the outside, so something has to
+run where the packets pass: the machine itself, a gateway, or a mirror port. The wizard prints the commands
+for Windows, Linux and Docker with your key and address filled in, plus a tab that replays a bundled
+synthetic capture for trying it without admin rights. Within seconds the **Traffic** page shows how much each
+monitored host sent and received, who it talked to and which services it used; the dashboard shows the
+volume and a Flows/Data chart; Reports has a per-host CSV and the PDF summary includes the same table.
+
+**Router NetFlow.** For whole networks: the wizard gives copy-paste router config (MikroTik, pfSense,
+Cisco) or an HTTP/curl example, then polls until the first flows arrive. NetFlow exporters are accepted only
+from the registered address (unknown or ambiguous exporters are dropped and logged, ADR-005); the collector
+pairs a router's one-record-per-direction output into bidirectional flows before scoring (ADR-015).
 
 ## What is in the UI
 
-Dashboard (risk gauge, KPIs, traffic chart, top talkers, protocols, top attackers, live alerts,
-sources) · Alerts (filters, CSV export) and alert detail (evidence, triage, recommendations, why
+Dashboard (risk gauge, KPIs incl. data volume, traffic chart with a Flows/Data switch, top talkers,
+protocols, top attackers, monitored hosts, live alerts, sources) · Traffic (data sent and received per
+monitored host, over time, with top peers and services) · Alerts (filters, CSV export) and alert detail (evidence, triage, recommendations, why
 the model flagged it when the model supports it) · Actions (the ranked to-do list with framework
 references and a data-protection note) · Risk (assets, 24 h trend) · Models (registry, comparison,
-per-class metrics, limitations, activate) · Reports (PDF summary, CSV) · Evaluate (SUS and TAM
-forms, aggregate for admins) · Add source (wizard).
+per-class metrics, limitations, activate) · Reports (PDF summary, alerts CSV, data-volume CSV) · Evaluate (SUS and TAM
+forms, aggregate for admins) · Add source (wizard: quick-start sensor, router NetFlow or HTTP API).
 
 ## Test
 
@@ -177,8 +186,10 @@ Detection quality on a new network is unproven (see the model section and ADR-02
 of attack flows go unflagged at the calibrated threshold; the Random Forest cannot explain individual
 alerts; ingest capacity was measured by draining a queued backlog on one laptop, not by a long soak or a
 load test from real exporters; the CIS Controls and NIST CSF titles are unverified (the ATT&CK ones are
-checked against the official data); no real-router NetFlow test has been run; the UI polls every 3 s (no
+checked against the official data); no real-router NetFlow test has been run; the sensor's live capture was verified on Linux (byte counts matched the kernel's own counters) and on Windows
+for IPv4, but the Windows sensor cannot read IPv6, which carries most browsing on a dual-stack machine, so
+volumes there are a lower bound; macOS is unsupported (use `--read-pcap`); the UI polls every 3 s (no
 SSE); sign-in throttling is per account only, and a known account can be locked for 15 minutes by
 someone who fails on purpose; open registration is on by default (set `ALLOW_REGISTRATION=false` for a
 public deployment); the Playwright specs need a trained model and are not run in CI; there is no
-off-machine backup schedule, only the scripts. See ADR-014..025 for the rest.
+off-machine backup schedule, only the scripts. See ADR-014..026 for the rest.

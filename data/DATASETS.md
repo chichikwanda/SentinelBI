@@ -123,6 +123,10 @@ security expert or supervisor) before being presented as validated.
 
 - `data/samples/synthetic_flows.csv`: 705 SYNTHETIC flows made by `ml/src/synth_sample.py`
   (seed 20261024). Not real traffic; used by tests and the placeholder-era demo.
+- `data/samples/sensor_demo.pcap`: SYNTHETIC packet headers (a small office for eight minutes plus a 50-port
+  scan) made by `scripts/make_sensor_demo_pcap.py` (seed 2026; a test checks the committed file matches the
+  script). 8,535 packets, 30 MB described, 682 kB on disk because only headers are stored. For trying the
+  sensor without capture rights; nothing in it was recorded from a real network.
 - `data/processed/demo_sample.csv` (gitignored, made by `make sample`): 2,962 real flows drawn
   from the held-out TEST split of NF-UNSW-NB15-v2, enriched with attacks for demonstration. It is a
   subset of a licensed dataset, so it is generated locally and never committed.

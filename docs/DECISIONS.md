@@ -458,3 +458,101 @@ off-machine copy; `backups/` holds password hashes and tenant data and is gitign
 disk that is nearly full). `.github/workflows/ci.yml` runs ruff, mypy, the whole pytest suite against real TimescaleDB
 and Redis service containers, the frontend lint, type check and build, and a compose validity check. The Playwright
 specs are not in CI: they need a trained model, which is not committed.
+
+---
+
+## ADR-026: a "flowless" quick start: the sensor, data-volume views and reports
+
+**The request.** Register, type an IP address, and watch that address's traffic, with reports and the amount of
+data transmitted, without configuring flow export on a router.
+
+**The constraint.** A server cannot observe an arbitrary address's traffic from outside; packets have to be seen
+where they pass. Three real options: (1) a program on the host, a gateway or a mirror port that reads packet
+headers and reports them; (2) polling a device's interface counters over SNMP, which gives volume but needs
+credentials and gives the model no flows; (3) probing the address from outside, which shows reachability, not
+traffic, and active scanning stays off until the attestation flow and audit log exist (ADR-006). Option 1 is the
+plan's "sensor mode", it feeds the same pipeline (so alerts, risk and recommendations work on it), and it is what
+the long-reserved `sensor` method was for. It is what was built.
+
+**Decisions.**
+
+- **The sensor** (`sensor/sentinelbi_sensor.py`): one standard-library file, Python 3.9+. Linux packet socket,
+  Windows receive-all raw socket, or `--read-pcap`. Headers only, no payload field exists in the record. Flows
+  are bidirectional with the NetFlow v9 convention the model was trained on (client opens, `in_*` client to
+  server, ICMP type and code in the destination port, IP-level byte counts, a server's reply seen first does not
+  make it the client). It never counts its own reports, keeps a bounded backlog while the server is down, and
+  reads the kernel's drop counter so any loss is reported, not hidden.
+- **Delivery**: the API serves the script (`GET /sensor/sentinelbi_sensor.py`, public because it is code, with its
+  SHA-256 in a header and in the wizard). The wizard prints commands for Windows, Linux, Docker and a demo replay
+  with the key and address filled in. A bundled synthetic capture (`data/samples/sensor_demo.pcap`) lets the whole
+  path be tried without capture rights.
+- **Onboarding**: the register form takes an optional IP and the wizard opens with it filled in; the sensor is
+  the wizard's default method; an empty dashboard offers the same in one box.
+- **Data volume**: a host's *sent* is `in_bytes` when it is the flow's source and `out_bytes` when it is the
+  destination (and the reverse for *received*); a flow between two monitored hosts counts for both. *Monitored*
+  means inside a registered source. New: `/traffic/summary`, `/traffic/hosts`, `/traffic/hosts/{ip}` (sent and
+  received over time, top peers, top services), a Traffic page, a data tile and Flows/Data switch on the
+  dashboard, a per-host CSV and a data-volume table in the PDF. Sizes are decimal everywhere (the UI used 1024
+  while the reports used 1000; one rule now).
+- **Addresses**: a single host is shown as `10.0.0.5`, never `10.0.0.5/32`, in every response (it differed
+  between the create response and lists).
+
+**What verifying it found** (all fixed):
+
+1. The first live capture **under-counted**: about 369 kB reported for 400 kB uploaded, 7 packets short of the
+   kernel's counters. The packet socket's buffer is charged per whole (offloaded, up to 64 kB) packet, so a burst
+   overflowed it and the kernel dropped the copies. Fix: read only the headers with the real length from
+   `MSG_TRUNC`, enlarge the buffer where privileges allow, count drops and warn. Result, two containers moving 3.0 MB
+   and 0.4 MB: within 0.01% of the kernel's interface counters with `NET_ADMIN`; with `NET_RAW` only, 13 packets are
+   still dropped in that burst and the sensor says so.
+2. ruff's autofix (the repo targets Python 3.11) had rewritten `timezone.utc` to `datetime.UTC`, silently breaking
+   the 3.9 support the sensor claims. Found by running it on a real Python 3.9; now 3.9 and 3.13 give byte-identical
+   records, a test guards the imports (checked by reintroducing the bug), and CI replays the capture on 3.9.
+3. The browser test found the `/32` inconsistency, and a pre-existing race in the detections test (it counted a
+   live list while the worker was still adding to it, made visible by the larger worker batches of ADR-025).
+
+**Also measured**: about 177,000 packets per second per core for parsing, filtering and flow building (offline);
+the end-to-end test through the real stack (container downloads the sensor from the API, captures 40 HTTP
+connections, reports to the real ingest endpoint) shows both hosts with mirrored sent and received bytes.
+
+**Not verified, and open.** Live capture on **Windows** (needs an elevated terminal; this machine's session was
+not, and the user's own setup is the first real test); macOS (unsupported); IPv6 on Windows; long soak runs;
+mirror-port and NAT topologies. Detection quality on real traffic is still unproven (ADR-023/024): a user's own
+machine will be scored by a model trained on lab datasets, so expect false alarms; the window and share rules
+limit them. The API key travels in an HTTP header, so use HTTPS beyond a trusted LAN. The sensor needs
+administrator rights on the machine it watches and must only be run on machines and networks the user
+administers; it is passive, so the scanning rule (ADR-006) is not touched.
+
+---
+
+## Addendum to ADR-025 and ADR-026 (same day): what real use on the user's laptop found
+
+**Redis kept every finished message.** The worker acknowledged messages but never deleted them, so the stream
+held up to `stream_maxlen` (500,000) processed messages for ever: measured 500,003 of them, 180 MB of Redis memory.
+The worker now deletes a message once it is acknowledged (stored, or copied to the dead-letter stream); after
+clearing the old backlog Redis used 1.7 MB. A test checks the stream is empty after a drain.
+
+**Redis stalls surfaced as 503 on ingest.** redis-py 8's default socket timeout is 5 s. During repeated browser runs
+Redis logged "Asynchronous AOF fsync is taking too long (disk is busy?)" (14 delayed fsyncs) and ingest answered 503
+(`Timeout reading from redis`). The client now waits 30 s (explicit, configurable) and Redis does not fsync during
+AOF rewrites. Afterwards two consecutive browser runs passed 5 of 5 at about 50 s each and no fsync was delayed.
+A known weakness remains: if Redis executes a batch after the client has already timed out, a retry (the sensor
+retries on 503) can store it twice; ingest has no idempotency key yet.
+
+**Hardware, not software, caused the remaining flakiness.** The laptop's CPU (i7-4600U) ran at 1,000 of 2,701 MHz
+under 100% load after many back-to-back runs, and CPU-only stages slowed 5 to 10 times (prediction 50 ms became up
+to 9.5 s for 500 flows) until some browser tests timed out. I first suspected the per-minute risk snapshots; measured,
+they take 1.1 s for 41 organisations, so they are not the cause. Treat timing results from a throttled machine with
+suspicion, as with the faulty RAM (ADR-024).
+
+**The sensor on the user's real Windows machine** (elevated tests, counts only):
+the self-test passed; an IPv4-only request was captured in both directions (9 packets out, 9 in) and a live run
+reported 14 flows to the real API with exact ICMP byte counts; but a normal HTTPS request produced **no** packets,
+because the machine has global IPv6 and Windows used it. Windows delivers IPv6 raw packets without the IPv6 header, a
+TCP-specific IPv6 raw socket cannot be opened, and a protocol-neutral one gives header-less payloads (addresses and
+protocol would have to be guessed), so IPv6 is not captured on Windows. The sensor now says so at start-up on a
+machine that has IPv6, says why when it sees no packets in its first ten seconds or none for the address it was given,
+and warns when that address belongs to a virtual adapter (Hyper-V, WSL, Docker) rather than the one internet traffic
+uses, which was the user's first mistake. Options for IPv6 on Windows, none built: capture through Npcap (accurate,
+needs an install), reconstruct addresses from header-less packets (approximate), or capture on a Linux gateway or
+mirror port.

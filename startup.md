@@ -77,6 +77,31 @@ Wait 30 to 60 seconds, then open the Dashboard, Alerts, Actions and Risk pages. 
 The Models page, under Details, shows the alert threshold, the per-dataset and cross-dataset results and the
 probe. Read them: detection on a new network is unproven (README, ADR-023 and ADR-024).
 
+## 5b. Monitor an IP address without a router (the sensor)
+
+This is the "just give me an IP" path. A server cannot see an address's traffic from outside, so a small
+program, the sensor, runs on the machine you want to watch and reports what it sees. It reads packet headers
+only, never contents.
+
+1. Register with an IP in the optional field (or use the box on an empty dashboard, or **Add source**).
+2. The wizard shows commands for Windows, Linux and Docker with your API key and address filled in. Run the
+   `--self-test` line first: it proves capture works on that machine. Run the last line to start reporting.
+   Windows needs an **Administrator** PowerShell; Linux needs `sudo`. Python 3.9 or newer, nothing to install.
+3. Within seconds the wizard says "First flows received". Open **Traffic** to see how much that host sent and
+   received, who it talked to and which services it used. **Reports** has the per-host CSV and the PDF.
+
+No admin rights, or just trying it? From the project folder, replay the bundled synthetic capture onto your own
+address (the wizard's last tab prints this with your key):
+
+```powershell
+python sensor\sentinelbi_sensor.py --read-pcap data\samples\sensor_demo.pcap --shift-to-now --map-ip 10.20.0.5=YOUR-IP --api-url http://127.0.0.1:8000 --api-key sbi_...
+```
+
+Details, accuracy figures and limits are in `sensor/README.md`. The sensor script is served by the API itself
+(`/api/v1/sensor/sentinelbi_sensor.py`, with its SHA-256 shown in the wizard), so another machine on your
+network only needs to reach the API address in `API_PUBLIC_URL` (set it to this machine's LAN address in `.env`
+when the sensor runs elsewhere).
+
 ## 6. Train a model (only when none exists)
 
 Needs `uv` and about 650 MB of dataset downloads on the first run. The training script checks every dataset file
@@ -133,7 +158,7 @@ docker compose --profile test run --rm --build test pytest
 cd tests\e2e; npx playwright install chromium --only-shell; npx playwright test; cd ..\..
 ```
 
-The Playwright specs need the stack running and a trained model. Do not run two pytest sessions at once; they
+The Playwright specs need the stack running and a trained model, and each run registers several new organisations, so keep `REGISTER_MAX_PER_HOUR=200` (the `.env.example` value) or the sign-up cap of 20 per hour will stop them (the page then says "Too many sign-ups"). Do not run two pytest sessions at once; they
 share one test database. GitHub Actions runs lint, mypy, the pytest suite and the frontend build on every push
 (`.github/workflows/ci.yml`); it does not run the Playwright specs.
 
@@ -146,6 +171,12 @@ share one test database. GitHub Actions runs lint, mypy, the pytest suite and th
 | Port 3000, 8000 or 2055 already in use | Change `WEB_PORT` or `API_PORT` in `.env`, then run `docker compose up -d` again. |
 | Login fails right after the first start | Check `docker compose ps` shows `migrate` exited cleanly and `api` healthy; `docker compose logs migrate` shows the seed line. |
 | "Too many failed sign-in attempts" | The account is locked for the time shown. Wait, or clear the counter: `docker compose exec redis redis-cli --scan --pattern "rl:*"` lists the keys, `DEL` removes one. |
+| The sensor's `--self-test` says it needs Administrator or root | Open an Administrator PowerShell (Windows) or use `sudo` (Linux). In Docker add `--cap-add=NET_RAW --cap-add=NET_ADMIN`. |
+| The self-test opens capture but does not see its own packet | Linux: add `--iface <name>`. Windows: add `--interface-ip <this machine's address>`. Windows capture is untested by the author: if it still fails, use Linux or replay a capture with `--read-pcap`. |
+| The sensor starts with a WARNING that the address is "not the one your internet traffic uses" | You entered a virtual adapter's address (vEthernet, WSL, Docker). Use the address of the adapter with a Default Gateway (`ipconfig` on Windows, `ip route get 1.1.1.1` on Linux), and register that address, because the Traffic page only lists hosts inside a registered source. |
+| On Windows the sensor runs but your browsing does not show up | Windows capture reads IPv4 only, and a dual-stack machine sends most browsing over IPv6 (the sensor says so at start-up). Generate IPv4 traffic to confirm it works, for example `ping -4 -n 5 1.1.1.1`; the volumes you see are a lower bound. |
+| The sensor runs but the wizard never says "First flows received" | Check the sensor prints no "cannot reach" or "rejected the API key" lines, that `--api-url` is reachable from that machine, and that traffic involving the watched IP is actually passing that machine. Flows are reported when a connection ends or after 15 s of silence. |
+| The sensor warns that the kernel dropped packets | Byte counts are then a lower bound. Run as root, or add `--cap-add=NET_ADMIN` in Docker, so it can enlarge the capture buffer. |
 | No alerts after the replay | Wait a minute. Check `docker compose ps` (worker healthy), that a model is active (section 4), and `docker compose logs worker`. |
 | The web image build fails with a TypeScript or "Unexpected identifier" error | This happened here without any source change and passed on retry. Run the build again. |
 | Odd one-off failures: corrupted files, hash mismatches, crashes in training | This laptop has faulty memory (ADR-024). Run Windows Memory Diagnostic or MemTest86 on each RAM stick, and until then re-run anything that matters and compare. |
