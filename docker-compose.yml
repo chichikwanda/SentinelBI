@@ -60,7 +60,7 @@ services:
     image: redis:7.4.9-alpine
     # noeviction: when full, XADD fails and the ingest API answers 503 (backpressure)
     # instead of Redis silently evicting unprocessed flows.
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--no-appendfsync-on-rewrite", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
     ports:
@@ -94,6 +94,7 @@ services:
     environment: *backend-env
     volumes:
       - ./ml/models:/repo/ml/models:ro
+      - ./sensor:/repo/sensor:ro  # the sensor script users download from the wizard
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

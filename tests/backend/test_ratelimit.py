@@ -128,3 +128,9 @@ async def test_throttling_fails_open_when_redis_is_down(client: httpx.AsyncClien
 
 def test_minutes_rounds_up_for_people() -> None:
     assert [minutes(s) for s in (1, 60, 61, 900)] == [1, 1, 2, 15]
+
+
+def test_redis_waits_longer_than_the_library_default_for_a_stalled_disk(settings: Settings) -> None:
+    kwargs = get_redis().connection_pool.connection_kwargs
+    assert settings.redis_timeout_seconds == 30.0
+    assert kwargs.get("socket_timeout", kwargs.get("orig_socket_timeout")) == 30.0

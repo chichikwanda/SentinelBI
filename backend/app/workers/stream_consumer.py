@@ -101,6 +101,12 @@ async def _handle(
     )
     if result.acked:
         await redis.xack(settings.stream_flows, settings.stream_group, *result.acked)
+        # An acknowledged message is finished (stored, or copied to the dead-letter stream), so
+        # it is deleted. Otherwise the stream keeps up to stream_maxlen processed messages for
+        # ever: measured before this, 500,003 finished messages and 180 MB of Redis memory, and
+        # slow persistence that showed up as intermittent "Timeout reading from redis" (503) on
+        # ingest. stream_maxlen remains the cap for a backlog that is not being consumed.
+        await redis.xdel(settings.stream_flows, *result.acked)
     log.info(
         "batch msgs=%d inserted=%d dead=%d alerts=%d ms=%.0f [%s]",
         len(messages),

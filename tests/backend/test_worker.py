@@ -206,6 +206,26 @@ async def test_malformed_message_is_dead_lettered_without_blocking_the_rest(
     assert pending["pending"] == 0  # everything acked, nothing stuck
 
 
+async def test_finished_messages_are_deleted_from_the_stream(
+    client: httpx.AsyncClient,
+    tenant: Tenant,
+    redis: Redis,
+    sessionmaker: Any,
+    settings: Settings,
+    flow_factory: Any,
+) -> None:
+    await ingest(client, tenant, [flow_factory(src_port=50000 + i) for i in range(30)])
+    assert await redis.xlen(settings.stream_flows) == 30  # queued, not yet consumed
+    assert await drain(redis, sessionmaker, settings) == 30
+    # stored and acknowledged: nothing should linger in Redis (it used to keep up to 500,000)
+    assert await redis.xlen(settings.stream_flows) == 0
+    assert (await redis.xpending(settings.stream_flows, settings.stream_group))["pending"] == 0
+    assert (
+        await scalar(sessionmaker, "SELECT count(*) FROM flows WHERE org_id = :o", o=tenant.org_id)
+        == 30
+    )
+
+
 async def test_poison_message_that_fails_in_the_database_is_isolated(
     client: httpx.AsyncClient, tenant: Tenant, redis: Redis, sessionmaker: Any, settings: Settings
 ) -> None:
