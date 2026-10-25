@@ -123,6 +123,8 @@ def _sensor_snippets(api: str, key: str, cidr: str, settings: Settings) -> list[
             "Windows",
             "shell",
             "# Run in an ADMINISTRATOR PowerShell on the machine you want to watch (needs Python 3.9+).\n"
+            "# Optional, recommended: install Npcap first (https://npcap.com, free for personal use) so IPv6\n"
+            "# traffic is counted too; without it only IPv4 is captured on Windows.\n"
             f"Invoke-WebRequest -UseBasicParsing {url} -OutFile sentinelbi_sensor.py\n"
             f"Get-FileHash sentinelbi_sensor.py -Algorithm SHA256   # {check}\n"
             "python sentinelbi_sensor.py --self-test\n"

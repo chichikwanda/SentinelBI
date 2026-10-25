@@ -22,7 +22,10 @@ from __future__ import annotations
 import argparse
 import collections
 import contextlib
+import ctypes
+import ctypes.util
 import functools
+import hashlib
 import ipaddress
 import json
 import os
@@ -35,7 +38,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 VERSION = "0.1.0"
 
@@ -303,6 +306,9 @@ class LinuxCapture:
     """AF_PACKET capture. Only the first HEADER_BYTES of each packet are copied out of the kernel;
     MSG_TRUNC still reports the real length, so byte counts are exact."""
 
+    sees_ipv6 = True
+    name = "Linux packet socket (IPv4 and IPv6)"
+
     def __init__(self, iface: Optional[str]) -> None:
         self.sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))  # type: ignore[attr-defined]
         # A packet socket is charged for whole packets (offloading makes them up to 64 KB), so the
@@ -356,6 +362,20 @@ def default_local_ip() -> str:
         return str(probe.getsockname()[0])
     finally:
         probe.close()
+
+
+class WindowsRawCapture:
+    """The fallback when Npcap is not installed: a receive-all raw socket, IPv4 only."""
+
+    sees_ipv6 = False
+    name = "Windows raw socket (IPv4 only)"
+    drops = 0
+
+    def __init__(self, local_ip: str) -> None:
+        self.local_ip = local_ip
+
+    def __iter__(self) -> Iterator[Raw]:
+        return windows_source(self.local_ip)
 
 
 def windows_source(local_ip: str) -> Iterator[Raw]:
@@ -424,6 +444,317 @@ def pcap_source(path: str, header_only: bool = False) -> Iterator[Raw]:
             yield ts, data[skip:], kind, max(wire, caplen) - skip
 
 
+# --------------------------------------------------------------------------------------------
+# libpcap / Npcap through ctypes: IPv4 AND IPv6 with full headers on Windows and macOS
+# --------------------------------------------------------------------------------------------
+# The Windows raw socket cannot read IPv6 (Windows delivers IPv6 raw packets without their header).
+# Npcap, the capture driver used by Wireshark and Nmap, can. It is not bundled (its free licence
+# forbids redistribution): the user installs it from https://npcap.com and this backend finds it.
+class PcapUnavailable(Exception):
+    """The capture library is not installed (Npcap on Windows, libpcap elsewhere)."""
+
+
+NPCAP_URL = "https://npcap.com"
+_AF_INET6 = {10, 23, 30}  # Linux, Windows, BSD/macOS
+
+
+def link_layer(dlt: int) -> Optional[Tuple[str, int]]:
+    """(kind, bytes to skip before the IP header) for a libpcap link type, None if unsupported."""
+    return {
+        1: ("eth", 0),  # Ethernet (also what Wi-Fi adapters present)
+        0: ("ip", 4),  # BSD loopback: 4-byte address-family header
+        108: ("ip", 4),  # OpenBSD loopback
+        12: ("ip", 0),  # raw IP
+        101: ("ip", 0),  # raw IP (Linux numbering)
+        113: ("ip", 16),  # Linux "cooked" capture (the "any" device)
+    }.get(dlt)
+
+
+def sockaddr_ip(raw: bytes, bsd: bool = False) -> Optional[str]:
+    """The address inside a C ``struct sockaddr`` (IPv4 or IPv6), or None."""
+    if len(raw) < 8:
+        return None
+    family = raw[1] if bsd else int.from_bytes(raw[:2], sys.byteorder)
+    if family == socket.AF_INET:
+        return socket.inet_ntoa(raw[4:8])
+    if family in _AF_INET6 and len(raw) >= 24:
+        return socket.inet_ntop(socket.AF_INET6, raw[8:24])
+    return None
+
+
+def norm_ip(text: str) -> str:
+    try:
+        return str(ipaddress.ip_address(text.strip().split("%")[0]))
+    except ValueError:
+        return text.strip()
+
+
+Device = Tuple[str, str, List[str]]  # (name, description, addresses)
+
+
+def choose_device(devices: List[Device], wanted: List[str], iface: Optional[str]) -> str:
+    """Pick the capture device: by --iface (exact name, or a part of the name or description),
+    else the first device that owns one of the wanted addresses."""
+    listing = "; ".join(f"{name} ({desc or 'no description'})" for name, desc, _ in devices)
+    if iface:
+        for name, _, _ in devices:
+            if name == iface:
+                return name
+        part = [d for d in devices if iface.lower() in f"{d[0]} {d[1]}".lower()]
+        if len(part) == 1:
+            return part[0][0]
+        raise OSError(
+            f"--iface {iface!r} matches {len(part)} capture devices; available: {listing or 'none'}"
+        )
+    for ip in wanted:
+        target = norm_ip(ip)
+        for name, _, addrs in devices:
+            if target in {norm_ip(a) for a in addrs}:
+                return name
+    raise OSError(
+        f"no capture device has the address {', '.join(wanted) or '(none given)'}; choose one with "
+        f"--iface (see --list-devices). Available: {listing or 'none'}"
+    )
+
+
+class _PcapStat(ctypes.Structure):
+    _fields_ = [
+        ("ps_recv", ctypes.c_uint32),
+        ("ps_drop", ctypes.c_uint32),
+        ("ps_ifdrop", ctypes.c_uint32),
+        ("_rest", ctypes.c_uint32 * 8),
+    ]
+
+
+class _Timeval(ctypes.Structure):
+    _fields_ = (
+        [("tv_sec", ctypes.c_long), ("tv_usec", ctypes.c_int32), ("_pad", ctypes.c_int32)]
+        if sys.platform == "darwin"
+        else [("tv_sec", ctypes.c_long), ("tv_usec", ctypes.c_long)]
+    )
+
+
+class _PktHdr(ctypes.Structure):
+    _fields_ = [("ts", _Timeval), ("caplen", ctypes.c_uint32), ("len", ctypes.c_uint32)]
+
+
+class _PcapAddr(ctypes.Structure):
+    pass
+
+
+_PcapAddr._fields_ = [
+    ("next", ctypes.POINTER(_PcapAddr)),
+    ("addr", ctypes.c_void_p),
+    ("netmask", ctypes.c_void_p),
+    ("broadaddr", ctypes.c_void_p),
+    ("dstaddr", ctypes.c_void_p),
+]
+
+
+class _PcapIf(ctypes.Structure):
+    pass
+
+
+_PcapIf._fields_ = [
+    ("next", ctypes.POINTER(_PcapIf)),
+    ("name", ctypes.c_char_p),
+    ("description", ctypes.c_char_p),
+    ("addresses", ctypes.POINTER(_PcapAddr)),
+    ("flags", ctypes.c_uint32),
+]
+
+
+class PcapLib:
+    """The few libpcap functions we need, behind an interface the tests can replace."""
+
+    def __init__(self, cdll: ctypes.CDLL, where: str) -> None:
+        self.where = where
+        self._c = cdll
+        c = cdll
+        c.pcap_findalldevs.argtypes = [ctypes.POINTER(ctypes.POINTER(_PcapIf)), ctypes.c_char_p]
+        c.pcap_findalldevs.restype = ctypes.c_int
+        c.pcap_freealldevs.argtypes = [ctypes.POINTER(_PcapIf)]
+        c.pcap_freealldevs.restype = None
+        c.pcap_open_live.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_char_p,
+        ]
+        c.pcap_open_live.restype = ctypes.c_void_p
+        c.pcap_next_ex.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.POINTER(_PktHdr)),
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+        ]
+        c.pcap_next_ex.restype = ctypes.c_int
+        c.pcap_datalink.argtypes = [ctypes.c_void_p]
+        c.pcap_datalink.restype = ctypes.c_int
+        c.pcap_stats.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PcapStat)]
+        c.pcap_stats.restype = ctypes.c_int
+        c.pcap_geterr.argtypes = [ctypes.c_void_p]
+        c.pcap_geterr.restype = ctypes.c_char_p
+        c.pcap_close.argtypes = [ctypes.c_void_p]
+        c.pcap_close.restype = None
+
+    @staticmethod
+    def load() -> PcapLib:
+        candidates: List[str] = []
+        if sys.platform == "win32":
+            root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+            npcap = os.path.join(root, "System32", "Npcap")
+            if os.path.isdir(npcap) and hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(npcap)  # wpcap.dll needs Packet.dll from the same folder
+            candidates = [
+                os.path.join(npcap, "wpcap.dll"),
+                os.path.join(root, "System32", "wpcap.dll"),
+            ]
+        else:
+            found = ctypes.util.find_library("pcap")
+            candidates = [
+                c for c in (found, "libpcap.so.1", "libpcap.so.0.8", "libpcap.dylib") if c
+            ]
+        errors: List[str] = []
+        for path in candidates:
+            if os.path.isabs(path) and not os.path.exists(path):
+                continue
+            try:
+                return PcapLib(ctypes.CDLL(path), path)
+            except OSError as exc:
+                errors.append(f"{path}: {exc}")
+        hint = (
+            f"Npcap is not installed. Install it from {NPCAP_URL} (free for personal use; its licence "
+            "does not allow redistribution, so it is not bundled) and run the sensor again."
+            if sys.platform == "win32"
+            else "libpcap is not installed (Debian/Ubuntu: apt install libpcap0.8)."
+        )
+        raise PcapUnavailable(hint + (f" Tried: {'; '.join(errors)}" if errors else ""))
+
+    def devices(self) -> List[Device]:
+        err = ctypes.create_string_buffer(256)
+        head = ctypes.POINTER(_PcapIf)()
+        if self._c.pcap_findalldevs(ctypes.byref(head), err) != 0:
+            raise OSError(f"cannot list capture devices: {err.value.decode(errors='replace')}")
+        found: List[Device] = []
+        try:
+            dev = head
+            while dev:
+                d = dev.contents
+                addrs: List[str] = []
+                a = d.addresses
+                while a:
+                    ac = a.contents
+                    if ac.addr:
+                        head2 = ctypes.string_at(ac.addr, 2)
+                        fam = (
+                            head2[1]
+                            if sys.platform == "darwin"
+                            else int.from_bytes(head2, sys.byteorder)
+                        )
+                        size = 8 if fam == socket.AF_INET else 24
+                        ip = sockaddr_ip(
+                            ctypes.string_at(ac.addr, size), bsd=sys.platform == "darwin"
+                        )
+                        if ip:
+                            addrs.append(ip)
+                    a = ac.next
+                found.append(
+                    (
+                        d.name.decode(errors="replace"),
+                        (d.description or b"").decode(errors="replace"),
+                        addrs,
+                    )
+                )
+                dev = d.next
+        finally:
+            self._c.pcap_freealldevs(head)
+        return found
+
+    def open(self, device: str, snaplen: int, promiscuous: bool, timeout_ms: int) -> int:
+        err = ctypes.create_string_buffer(256)
+        handle = self._c.pcap_open_live(
+            device.encode(), snaplen, 1 if promiscuous else 0, timeout_ms, err
+        )
+        if not handle:
+            message = err.value.decode(errors="replace")
+            if "permission" in message.lower() or "denied" in message.lower():
+                raise PermissionError(message)
+            raise OSError(f"cannot open {device}: {message}")
+        return int(handle)
+
+    def datalink(self, handle: int) -> int:
+        return int(self._c.pcap_datalink(handle))
+
+    def next(self, handle: int) -> Optional[Tuple[float, bytes, int]]:
+        """(timestamp, captured bytes, real length), or None when the read timed out."""
+        hdr = ctypes.POINTER(_PktHdr)()
+        data = ctypes.POINTER(ctypes.c_ubyte)()
+        rc = self._c.pcap_next_ex(handle, ctypes.byref(hdr), ctypes.byref(data))
+        if rc == 0:
+            return None
+        if rc < 0:
+            raise OSError(
+                (self._c.pcap_geterr(handle) or b"capture error").decode(errors="replace")
+            )
+        h = hdr.contents
+        return (
+            h.ts.tv_sec + h.ts.tv_usec / 1e6,
+            ctypes.string_at(data, h.caplen),
+            int(h.len),
+        )
+
+    def drops(self, handle: int) -> int:
+        stat = _PcapStat()
+        if self._c.pcap_stats(handle, ctypes.byref(stat)) != 0:
+            return 0
+        return int(stat.ps_drop) + int(stat.ps_ifdrop)
+
+    def close(self, handle: int) -> None:
+        self._c.pcap_close(handle)
+
+
+class PcapCapture:
+    """Live capture through libpcap/Npcap. Only the first HEADER_BYTES of each packet are copied;
+    the packet's real length comes from the library, so byte counts are exact."""
+
+    sees_ipv6 = True
+
+    def __init__(self, lib: Any, device: str, promiscuous: bool = False) -> None:
+        self.lib, self.device = lib, device
+        self.handle = lib.open(device, HEADER_BYTES, promiscuous, 500)
+        dlt = lib.datalink(self.handle)
+        layer = link_layer(dlt)
+        if layer is None:
+            lib.close(self.handle)
+            raise OSError(f"{device}: unsupported link type {dlt}")
+        self.kind, self.skip = layer
+        self.drops = 0
+        self.name = f"libpcap/Npcap on {device} (IPv4 and IPv6)"
+
+    def _count_drops(self) -> None:
+        self.drops = self.lib.drops(self.handle)  # cumulative in libpcap, not reset when read
+
+    def __iter__(self) -> Iterator[Raw]:
+        seen = 0
+        try:
+            while True:
+                item = self.lib.next(self.handle)
+                if item is None:
+                    self._count_drops()
+                    yield None
+                    continue
+                ts, data, wire = item
+                seen += 1
+                if seen % 2000 == 0:
+                    self._count_drops()
+                body = data[self.skip :]
+                yield ts, body, self.kind, max(wire - self.skip, len(body))
+        finally:
+            self._count_drops()
+            self.lib.close(self.handle)
+
+
 def parse_raw(raw: Tuple[float, bytes, str, int]) -> Optional[Packet]:
     ts, data, kind, wire = raw
     try:
@@ -444,7 +775,7 @@ class Exporter:
         self.url = api_url.rstrip("/") + "/api/v1/ingest/flows"
         self.key, self.batch = api_key, batch
         self.pending: collections.deque = collections.deque(maxlen=max_pending)
-        self.sent = self.dropped = 0
+        self.sent = self.dropped = self.duplicates = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="exporter", daemon=True)
@@ -461,19 +792,33 @@ class Exporter:
 
     def post(self, records: List[dict]) -> bool:
         body = json.dumps({"flows": records}).encode()
+        # The same records always give the same key, so if a reply is lost (timeout, dropped
+        # connection) and this batch is sent again, the server counts it once.
+        idempotency_key = hashlib.sha256(body).hexdigest()
         req = urllib.request.Request(  # noqa: S310 - the scheme is checked in __init__
             self.url,
             data=body,
             method="POST",
             headers={
                 "Content-Type": "application/json",
+                "Idempotency-Key": idempotency_key,
                 "X-API-Key": self.key,
                 "User-Agent": f"sentinelbi-sensor/{VERSION}",
             },
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - same URL, scheme checked
-                return resp.status == 202
+                if resp.status != 202:
+                    return False
+                try:
+                    answer = json.loads(resp.read() or b"{}")
+                except ValueError:
+                    answer = {}
+                if isinstance(answer, dict) and answer.get("duplicate"):
+                    self.duplicates += (
+                        1  # the server had this batch already: it was not counted again
+                    )
+                return True
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 log(f"the server rejected the API key (HTTP {exc.code}); check --api-key")
@@ -542,7 +887,51 @@ def endpoints_of(api_url: str) -> Set[Tuple[str, int]]:
         return set()
 
 
-def open_live(args: argparse.Namespace) -> Iterator[Raw]:
+def wanted_addresses(args: argparse.Namespace) -> List[str]:
+    """Addresses that identify the interface to capture on, most specific first."""
+    wanted: List[str] = []
+    if getattr(args, "interface_ip", None):
+        wanted.append(args.interface_ip)
+    for item in args.ip or []:
+        for part in item.split(","):
+            try:
+                net = ipaddress.ip_network(part.strip(), strict=False)
+            except ValueError:
+                continue
+            if net.num_addresses == 1:
+                wanted.append(str(net.network_address))
+    with contextlib.suppress(OSError):  # no route at all: the other addresses still apply
+        wanted.append(default_local_ip())
+    return wanted
+
+
+def list_devices(args: argparse.Namespace) -> int:
+    try:
+        devices = PcapLib.load().devices()
+    except PcapUnavailable as exc:
+        log(str(exc))
+        return 2
+    for name, desc, addrs in devices:
+        print(f"{name}\t{desc}\t{', '.join(addrs)}")
+    return 0
+
+
+def open_live(args: argparse.Namespace) -> Any:
+    """Pick the capture backend. libpcap/Npcap is preferred on Windows and macOS because it sees
+    IPv6 too; Linux uses its native packet socket (tested against the kernel's own counters)."""
+    backend = getattr(args, "backend", "auto")
+    use_pcap = backend == "pcap" or (backend == "auto" and sys.platform in ("win32", "darwin"))
+    if use_pcap:
+        try:
+            lib = PcapLib.load()
+        except PcapUnavailable as exc:
+            if backend == "pcap" or sys.platform == "darwin":
+                log(str(exc))
+                raise SystemExit(2) from exc
+            log(f"NOTE: {exc} Falling back to the Windows raw socket, which reads IPv4 only.")
+        else:
+            device = choose_device(lib.devices(), wanted_addresses(args), args.iface)
+            return PcapCapture(lib, device, getattr(args, "promiscuous", False))
     if sys.platform.startswith("linux"):
         return LinuxCapture(args.iface)
     if sys.platform == "win32":
@@ -550,7 +939,7 @@ def open_live(args: argparse.Namespace) -> Iterator[Raw]:
         if not local:
             hosts = [n for n in (args.ip or []) if "/" not in n and ":" not in n]
             local = hosts[0] if len(hosts) == 1 and _is_local(hosts[0]) else default_local_ip()
-        return windows_source(local)
+        return WindowsRawCapture(local)
     raise SystemExit(
         "this OS is not supported for live capture; use --read-pcap with a capture file"
     )
@@ -600,19 +989,20 @@ def has_global_ipv6() -> bool:
     return any(not str(i[4][0]).lower().startswith(("fe80", "::1")) for i in infos)
 
 
-def ipv6_notice() -> Optional[str]:
-    """Windows capture reads IPv4 only; on a dual-stack machine most browsing can be IPv6."""
-    if sys.platform != "win32" or not has_global_ipv6():
+def ipv6_notice(sees_ipv6: bool = True) -> Optional[str]:
+    """The Windows raw-socket fallback reads IPv4 only; on a dual-stack machine most browsing can be IPv6."""
+    if sees_ipv6 or sys.platform != "win32" or not has_global_ipv6():
         return None
     return (
-        "this machine also has IPv6, and the Windows sensor reads IPv4 only. Traffic that uses IPv6 "
-        "(often most web browsing, and QUIC) is NOT counted, so volumes here are a lower bound. "
-        "Linux captures both. IPv4 traffic, for example `ping -4 1.1.1.1`, is counted."
+        "this machine also has IPv6, and this capture (the Windows raw socket) reads IPv4 only. Traffic "
+        "that uses IPv6 (often most web browsing, and QUIC) is NOT counted, so volumes here are a lower "
+        f"bound. Install Npcap from {NPCAP_URL} (free for personal use) and run the sensor again: it "
+        "then captures IPv6 too. IPv4 traffic, for example `ping -4 1.1.1.1`, is counted either way."
     )
 
 
 def capture_diagnosis(
-    seen: int, kept: int, networks: List[str], on_windows: bool, ipv6: bool
+    seen: int, kept: int, networks: List[str], ipv4_only: bool, ipv6: bool
 ) -> Optional[str]:
     """Why nothing is being reported, said once after the first ten quiet seconds."""
     if seen == 0:
@@ -620,8 +1010,8 @@ def capture_diagnosis(
             "this machine may be idle, capture may be on the wrong interface (Linux: --iface NAME; "
             "Windows: --interface-ip ADDRESS)"
         )
-        if on_windows and ipv6:
-            why += ", or its traffic is IPv6, which the Windows sensor cannot read"
+        if ipv4_only and ipv6:
+            why += ", or its traffic is IPv6, which this capture cannot read (install Npcap)"
         return f"no packets were seen in the first 10 seconds: {why}. Try `ping -4 1.1.1.1` to generate IPv4 traffic."
     if kept == 0 and networks:
         return (
@@ -694,10 +1084,31 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="IP address or network to watch; repeat or comma-separate. Omit to report everything seen",
     )
-    p.add_argument("--iface", help="Linux: capture on this interface only (default: all except lo)")
+    p.add_argument(
+        "--iface",
+        help="Linux: capture on this interface only (default: all except lo). pcap backend: the device "
+        "name, or a part of its name or description (see --list-devices)",
+    )
     p.add_argument(
         "--interface-ip",
         help="Windows: local address of the interface to capture on (default: the one with the default route)",
+    )
+    p.add_argument(
+        "--backend",
+        choices=("auto", "native", "pcap"),
+        default="auto",
+        help="capture method: auto (default) uses Npcap/libpcap on Windows and macOS when installed, the "
+        "native socket otherwise; pcap forces libpcap/Npcap (also on Linux)",
+    )
+    p.add_argument(
+        "--promiscuous",
+        action="store_true",
+        help="pcap backend: also see packets not addressed to this machine (a gateway or mirror port)",
+    )
+    p.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="list the capture devices (pcap backend) and exit",
     )
     p.add_argument(
         "--read-pcap", metavar="FILE", help="read a classic .pcap file instead of capturing live"
@@ -755,6 +1166,8 @@ def run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         log(f"--ip: {exc}")
         return 2
+    if args.list_devices:
+        return list_devices(args)
     if args.self_test:
         return self_test(args)
     remap: Dict[str, str] = {}
@@ -807,12 +1220,13 @@ def run(args: argparse.Namespace) -> int:
         if hasattr(signal, "SIGTERM"):
             signal.signal(signal.SIGTERM, lambda *_: stop.set())
         log(
-            f"sensor {VERSION} capturing; watching {', '.join(networks) or 'all traffic'}; Ctrl+C to stop"
+            f"sensor {VERSION} capturing via {getattr(source, 'name', 'native capture')}; "
+            f"watching {', '.join(networks) or 'all traffic'}; Ctrl+C to stop"
         )
         warning = off_route_warning(networks)
         if warning:
             log(f"WARNING: {warning}")
-        notice = ipv6_notice()
+        notice = ipv6_notice(getattr(source, "sees_ipv6", True))
         if notice:
             log(f"NOTE: {notice}")
 
@@ -861,7 +1275,7 @@ def run(args: argparse.Namespace) -> int:
                     counts["seen"],
                     counts["kept"],
                     networks,
-                    sys.platform == "win32",
+                    not getattr(source, "sees_ipv6", True),
                     has_global_ipv6(),
                 )
                 if hint:
@@ -896,6 +1310,11 @@ def run(args: argparse.Namespace) -> int:
                 + (
                     f", {exporter.dropped} dropped while the server was unreachable"
                     if exporter.dropped
+                    else ""
+                )
+                + (
+                    f"; the server had already received {exporter.duplicates} batch(es) and ignored the repeat"
+                    if exporter.duplicates
                     else ""
                 )
             )

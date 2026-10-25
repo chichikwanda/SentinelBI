@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
+import socket
 import subprocess
 import sys
 import threading
@@ -462,6 +464,7 @@ class Receiver:
 
     def __init__(self, statuses: list[int]) -> None:
         self.statuses, self.requests = list(statuses), []
+        self.reply: dict = {"accepted": 1}
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -472,7 +475,9 @@ class Receiver:
                 )
                 code = outer.statuses.pop(0) if outer.statuses else 202
                 self.send_response(code)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
+                self.wfile.write(json.dumps(outer.reply).encode())
 
             def log_message(self, *args: Any) -> None:
                 pass
@@ -511,6 +516,36 @@ def test_flows_are_posted_with_the_api_key(receiver: Any) -> None:
     assert path == "/api/v1/ingest/flows"
     assert headers["x-api-key"] == "sbi_key_123" and body == {"flows": [REC, REC]}
     assert ex.sent == 2 and not ex.pending
+
+
+def test_every_batch_carries_a_key_that_is_the_same_when_the_batch_is_resent(receiver: Any) -> None:
+    r = receiver(503, 202)  # the first attempt fails, the resend succeeds
+    ex = s.Exporter(r.url, "k", batch=3)
+    ex.submit([{**REC, "n": i} for i in range(3)])
+    assert ex.flush_once() is False and ex.flush_once() is True
+    (_, first_headers, first_body), (_, second_headers, second_body) = r.requests
+    assert first_body == second_body  # the same records went out both times
+    key = first_headers["idempotency-key"]
+    assert key == second_headers["idempotency-key"]  # so the server can recognise the resend
+    assert key == hashlib.sha256(json.dumps(first_body).encode()).hexdigest()
+    ex.submit([{**REC, "n": 99}])
+    assert ex.flush_once() is True
+    assert r.requests[2][1]["idempotency-key"] != key  # a different batch is a different key
+
+
+def test_a_batch_the_server_had_already_is_counted_and_reported(
+    receiver: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    r = receiver()
+    r.reply = {"accepted": 1, "duplicate": True}
+    ex = s.Exporter(r.url, "k")
+    ex.submit([REC])
+    assert (
+        ex.flush_once() is True and ex.duplicates == 1 and not ex.pending
+    )  # delivered, not retried
+    r.reply = {"accepted": 1}
+    ex.submit([{**REC, "n": 2}])
+    assert ex.flush_once() is True and ex.duplicates == 1
 
 
 def test_a_failed_post_is_retried_in_order_with_nothing_lost(receiver: Any) -> None:
@@ -585,28 +620,238 @@ def test_watching_an_address_that_is_not_the_internet_facing_one_is_flagged(
 
 
 def test_silence_is_explained_instead_of_left_unexplained() -> None:
-    quiet = s.capture_diagnosis(0, 0, ["10.0.0.5"], on_windows=False, ipv6=False)
+    quiet = s.capture_diagnosis(0, 0, ["10.0.0.5"], ipv4_only=False, ipv6=False)
     assert quiet and "no packets" in quiet and "--iface" in quiet and "IPv6" not in quiet
-    win = s.capture_diagnosis(0, 0, ["10.0.0.5"], on_windows=True, ipv6=True)
-    assert win and "IPv6" in win and "ping -4" in win
-    elsewhere = s.capture_diagnosis(500, 0, ["10.0.0.5"], on_windows=False, ipv6=False)
+    win = s.capture_diagnosis(0, 0, ["10.0.0.5"], ipv4_only=True, ipv6=True)
+    assert win and "IPv6" in win and "Npcap" in win and "ping -4" in win
+    elsewhere = s.capture_diagnosis(500, 0, ["10.0.0.5"], ipv4_only=False, ipv6=False)
     assert elsewhere and "none involve 10.0.0.5" in elsewhere
-    assert s.capture_diagnosis(500, 12, ["10.0.0.5"], on_windows=True, ipv6=True) is None  # working
-    assert s.capture_diagnosis(500, 0, [], on_windows=False, ipv6=False) is None  # no filter given
+    assert s.capture_diagnosis(500, 12, ["10.0.0.5"], ipv4_only=True, ipv6=True) is None  # working
+    assert s.capture_diagnosis(500, 0, [], ipv4_only=False, ipv6=False) is None  # no filter given
 
 
-def test_the_windows_ipv6_limit_is_stated_only_where_it_applies(
+def test_the_ipv4_only_limit_is_stated_only_where_it_applies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(s, "has_global_ipv6", lambda: True)
     monkeypatch.setattr(s.sys, "platform", "win32")
-    notice = s.ipv6_notice()
-    assert notice and "IPv4 only" in notice and "lower bound" in notice
+    notice = s.ipv6_notice(sees_ipv6=False)  # the raw-socket fallback
+    assert notice and "IPv4 only" in notice and "lower bound" in notice and "Npcap" in notice
+    assert s.ipv6_notice(sees_ipv6=True) is None  # Npcap capture sees both families
     monkeypatch.setattr(s.sys, "platform", "linux")
-    assert s.ipv6_notice() is None  # Linux captures both families
+    assert s.ipv6_notice(sees_ipv6=False) is None  # not a Windows limitation
     monkeypatch.setattr(s.sys, "platform", "win32")
     monkeypatch.setattr(s, "has_global_ipv6", lambda: False)
-    assert s.ipv6_notice() is None  # an IPv4-only machine has nothing to warn about
+    assert s.ipv6_notice(sees_ipv6=False) is None  # an IPv4-only machine has nothing to warn about
+
+
+# ---------------------------------------------------------------------------------- libpcap / Npcap
+def sockaddr4(ip: str) -> bytes:
+    fam = socket.AF_INET.to_bytes(2, sys.byteorder)
+    return fam + b"\x00\x00" + socket.inet_aton(ip) + bytes(8)
+
+
+def sockaddr6(ip: str, family: int = socket.AF_INET6) -> bytes:
+    return (
+        family.to_bytes(2, sys.byteorder)
+        + bytes(2)
+        + bytes(4)
+        + socket.inet_pton(socket.AF_INET6, ip)
+        + bytes(4)
+    )
+
+
+def test_addresses_are_read_out_of_c_socket_structures() -> None:
+    assert s.sockaddr_ip(sockaddr4("10.181.2.111")) == "10.181.2.111"
+    assert s.sockaddr_ip(sockaddr6("2001:db8::7")) == "2001:db8::7"
+    assert s.sockaddr_ip(sockaddr6("2001:db8::7", family=23)) == "2001:db8::7"  # Windows' AF_INET6
+    assert (
+        s.sockaddr_ip(bytes([16, 2]) + bytes(2) + socket.inet_aton("1.2.3.4") + bytes(8), bsd=True)
+        == "1.2.3.4"
+    )
+    assert s.sockaddr_ip(b"\x00\x01") is None  # too short
+    assert s.sockaddr_ip(bytes(24)) is None  # an unknown family
+
+
+def test_link_layers_say_where_the_ip_header_starts() -> None:
+    assert s.link_layer(1) == ("eth", 0)
+    assert s.link_layer(0) == ("ip", 4) and s.link_layer(108) == ("ip", 4)  # BSD loopback header
+    assert s.link_layer(113) == ("ip", 16)  # Linux cooked
+    assert s.link_layer(12) == ("ip", 0) and s.link_layer(101) == ("ip", 0)
+    assert s.link_layer(105) is None  # Wi-Fi monitor mode: not supported
+
+
+DEVICES = [
+    (r"\Device\NPF_{AAA}", "Intel(R) Wi-Fi 6 AX201", ["fe80::1", "2a00:1:2::5", "10.181.2.111"]),
+    (r"\Device\NPF_{BBB}", "Hyper-V Virtual Ethernet Adapter (Default Switch)", ["172.18.16.1"]),
+    (r"\Device\NPF_Loopback", "Adapter for loopback traffic capture", ["127.0.0.1"]),
+]
+
+
+def test_the_capture_device_is_chosen_by_address_or_by_name() -> None:
+    assert s.choose_device(DEVICES, ["10.181.2.111"], None).endswith("{AAA}")
+    assert s.choose_device(DEVICES, ["172.18.16.1", "10.181.2.111"], None).endswith(
+        "{BBB}"
+    )  # first match wins
+    assert s.choose_device(DEVICES, ["2A00:0001:0002:0000:0000:0000:0000:0005"], None).endswith(
+        "{AAA}"
+    )  # IPv6, any spelling
+    assert s.choose_device(DEVICES, [], r"\Device\NPF_{BBB}").endswith("{BBB}")  # exact name
+    assert s.choose_device(DEVICES, [], "wi-fi").endswith("{AAA}")  # a part of the description
+    with pytest.raises(OSError, match="matches 2"):
+        s.choose_device(
+            DEVICES, [], "adapter"
+        )  # ambiguous: "Hyper-V ... Adapter" and "Adapter for loopback"
+    with pytest.raises(OSError, match="--list-devices"):
+        s.choose_device(DEVICES, ["192.0.2.9"], None)  # nothing owns that address: say what exists
+
+
+class FakeLib:
+    """Stands in for libpcap: a scripted list of (timestamp, bytes, real length) and a timeout (None)."""
+
+    def __init__(self, items: list[Any], dlt: int = 1) -> None:
+        self.items, self.dlt, self.closed, self.drop_count = list(items), dlt, False, 0
+
+    def open(self, device: str, snaplen: int, promiscuous: bool, timeout_ms: int) -> int:
+        self.opened = (device, snaplen, promiscuous, timeout_ms)
+        return 7
+
+    def datalink(self, handle: int) -> int:
+        return self.dlt
+
+    def next(self, handle: int) -> Any:
+        if not self.items:
+            raise OSError("end of script")
+        return self.items.pop(0)
+
+    def drops(self, handle: int) -> int:
+        return self.drop_count
+
+    def close(self, handle: int) -> None:
+        self.closed = True
+
+
+def test_a_pcap_capture_turns_library_packets_into_the_sensors_raw_tuples() -> None:
+    v6 = kit.ether(
+        kit.ipv6_packet(
+            "2a00:1:2::5", "2606:4700::1", 6, kit.tcp_segment(50000, 443, ACK, payload=10)
+        ),
+        ethertype=0x86DD,
+    )
+    lib = FakeLib(
+        [(T0, v6[:80], len(v6) + 1400), None]
+    )  # headers copied, 1400 more bytes on the wire
+    cap = s.PcapCapture(lib, "dev0", promiscuous=True)
+    assert lib.opened == ("dev0", s.HEADER_BYTES, True, 500) and cap.sees_ipv6
+    stream = iter(cap)
+    ts, data, kind, wire = next(stream)
+    assert (ts, kind, wire) == (T0, "eth", len(v6) + 1400) and data == v6[:80]
+    pkt = s.parse_raw((ts, data, kind, wire))
+    assert pkt and (pkt.src, pkt.dst, pkt.dport) == ("2a00:1:2::5", "2606:4700::1", 443)
+    assert (
+        pkt.length == 40 + 20 + 10
+    )  # IPv6 reports its own payload length: the wire padding is not counted
+    lib.drop_count = 9
+    assert next(stream) is None and cap.drops == 9  # an idle read: counted drops are refreshed
+    with pytest.raises(
+        OSError
+    ):  # the scripted capture ends with an error, as a failing device would
+        next(stream)
+    assert lib.closed  # and the handle is always released
+
+
+def test_loopback_style_link_types_skip_their_header() -> None:
+    ip = kit.ipv4_packet("10.0.0.5", "10.0.0.6", 17, kit.udp_datagram(1, 2, 20))
+    cap = s.PcapCapture(FakeLib([(T0, bytes(4) + ip, len(ip) + 4)], dlt=0), "lo0")
+    ts, data, kind, wire = next(iter(cap))
+    assert kind == "ip" and data == ip and wire == len(ip)
+    p = s.parse_raw((ts, data, kind, wire))
+    assert p and p.length == len(ip)
+
+
+def test_an_unsupported_link_type_is_refused_clearly() -> None:
+    lib = FakeLib([], dlt=105)
+    with pytest.raises(OSError, match="unsupported link type 105"):
+        s.PcapCapture(lib, "wlan-monitor")
+    assert lib.closed
+
+
+def args_for(argv: list[str]) -> Any:
+    return s.build_parser().parse_args(argv)
+
+
+def test_pcap_is_the_default_on_windows_and_falls_back_to_the_raw_socket_when_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(s.sys, "platform", "win32")
+    monkeypatch.setattr(s, "default_local_ip", lambda: "10.181.2.111")
+
+    def missing() -> Any:
+        raise s.PcapUnavailable("Npcap is not installed. Install it from https://npcap.com")
+
+    monkeypatch.setattr(s.PcapLib, "load", staticmethod(missing))
+    cap = s.open_live(args_for(["--ip", "10.181.2.111"]))
+    assert isinstance(cap, s.WindowsRawCapture) and not cap.sees_ipv6
+    assert "Falling back to the Windows raw socket" in capsys.readouterr().err
+
+    lib = FakeLib([])
+    lib.devices = lambda: DEVICES  # type: ignore[attr-defined]
+    monkeypatch.setattr(s.PcapLib, "load", staticmethod(lambda: lib))
+    cap2 = s.open_live(args_for(["--ip", "10.181.2.111"]))
+    assert isinstance(cap2, s.PcapCapture) and cap2.device.endswith("{AAA}") and cap2.sees_ipv6
+
+
+def test_asking_for_pcap_explicitly_never_falls_back_silently(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing() -> Any:
+        raise s.PcapUnavailable("libpcap is not installed")
+
+    monkeypatch.setattr(s.PcapLib, "load", staticmethod(missing))
+    with pytest.raises(SystemExit) as exit_info:
+        s.open_live(args_for(["--backend", "pcap", "--ip", "10.0.0.5"]))
+    assert exit_info.value.code == 2 and "libpcap is not installed" in capsys.readouterr().err
+
+
+def test_linux_keeps_its_native_capture_unless_pcap_is_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(s.sys, "platform", "linux")
+    made: list[str] = []
+    monkeypatch.setattr(s, "LinuxCapture", lambda iface: made.append(f"native:{iface}") or "native")
+    assert s.open_live(args_for(["--iface", "eth0"])) == "native" and made == ["native:eth0"]
+
+
+def test_the_wanted_addresses_put_the_watched_host_before_the_default_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(s, "default_local_ip", lambda: "10.181.2.111")
+    wanted = s.wanted_addresses(
+        args_for(["--ip", "172.18.16.1,10.0.0.0/24,2a00:1:2::5", "--interface-ip", "192.168.9.9"])
+    )
+    assert wanted == [
+        "192.168.9.9",
+        "172.18.16.1",
+        "2a00:1:2::5",
+        "10.181.2.111",
+    ]  # a /24 is not a host
+
+
+def test_list_devices_prints_them_or_explains_why_not(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lib = FakeLib([])
+    lib.devices = lambda: DEVICES  # type: ignore[attr-defined]
+    monkeypatch.setattr(s.PcapLib, "load", staticmethod(lambda: lib))
+    assert s.main(["--list-devices"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) == 3 and "10.181.2.111" in out[0] and "Default Switch" in out[1]
+
+    def missing() -> Any:
+        raise s.PcapUnavailable("Npcap is not installed")
+
+    monkeypatch.setattr(s.PcapLib, "load", staticmethod(missing))
+    assert s.main(["--list-devices"]) == 2
 
 
 def test_the_sensor_stays_runnable_on_python_3_9() -> None:
