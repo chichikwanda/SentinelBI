@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
@@ -15,6 +17,12 @@ from app.db.session import get_engine
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
+    if settings.env == "prod" and settings.allow_registration:
+        logging.getLogger(__name__).warning(
+            "ALLOW_REGISTRATION is true in prod: anyone who can reach this API can create an "
+            "organisation (capped at %s per hour). Set ALLOW_REGISTRATION=false unless intended.",
+            settings.register_max_per_hour,
+        )
     app = FastAPI(title="SentinelBI API", version="0.1.0")
 
     @app.get("/health", tags=["health"])
