@@ -7,10 +7,13 @@ copy-paste router configuration.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 
 from app.core.config import Settings
 from app.core.enums import SourceMethod
+from app.schemas.common import host_form
+from app.services.ingestion.sensor_script import load_sensor_script
 
 
 @dataclass(frozen=True)
@@ -29,7 +32,9 @@ class SetupInfo:
     snippets: list[Snippet]
 
 
-def build_setup_info(method: SourceMethod, api_key: str, settings: Settings) -> SetupInfo:
+def build_setup_info(
+    method: SourceMethod, api_key: str, settings: Settings, cidr: str | None = None
+) -> SetupInfo:
     host, port, api = (
         settings.collector_public_host,
         settings.collector_public_port,
@@ -64,7 +69,7 @@ def build_setup_info(method: SourceMethod, api_key: str, settings: Settings) -> 
                 f" ip flow ingress",
             ),
         ]
-    if method in (SourceMethod.HTTP, SourceMethod.SENSOR):
+    if method is SourceMethod.HTTP:
         snippets.append(
             Snippet(
                 "curl",
@@ -89,13 +94,67 @@ def build_setup_info(method: SourceMethod, api_key: str, settings: Settings) -> 
             )
         )
     if method is SourceMethod.SENSOR:
-        snippets.append(
-            Snippet(
-                "sensor",
-                "Sensor container (image not published yet)",
-                "shell",
-                f"docker run -e PLATFORM_URL={api} -e API_KEY={api_key} \\\n"
-                f"  --net=host sentinelbi/sensor",
-            )
-        )
+        snippets += _sensor_snippets(api, api_key, host_form(cidr or ""), settings)
     return SetupInfo(host, port, api, snippets)
+
+
+def _demo_host(cidr: str) -> str:
+    """An address inside the watched range to map the demo capture onto."""
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return "10.20.0.5"
+    return str(net.network_address if net.num_addresses == 1 else net.network_address + 1)
+
+
+def _sensor_snippets(api: str, key: str, cidr: str, settings: Settings) -> list[Snippet]:
+    """Commands that run the sensor on the machine (or gateway) that sees the traffic."""
+    script = load_sensor_script(settings.sensor_script_path)
+    url = f"{api}/api/v1/sensor/sentinelbi_sensor.py"
+    run = f"--api-url {api} --api-key {key} --ip {cidr}"
+    check = (
+        f"expected SHA-256: {script.sha256}"
+        if script
+        else "(this server could not read the script)"
+    )
+    snippets = [
+        Snippet(
+            "sensor-windows",
+            "Windows",
+            "shell",
+            "# Run in an ADMINISTRATOR PowerShell on the machine you want to watch (needs Python 3.9+).\n"
+            f"Invoke-WebRequest -UseBasicParsing {url} -OutFile sentinelbi_sensor.py\n"
+            f"Get-FileHash sentinelbi_sensor.py -Algorithm SHA256   # {check}\n"
+            "python sentinelbi_sensor.py --self-test\n"
+            f"python sentinelbi_sensor.py {run}",
+        ),
+        Snippet(
+            "sensor-linux",
+            "Linux",
+            "shell",
+            "# Run on the machine (or gateway) that sees the traffic. Needs Python 3.9+ and root.\n"
+            f"curl -fsSO {url}\n"
+            f"sha256sum sentinelbi_sensor.py   # {check}\n"
+            "sudo python3 sentinelbi_sensor.py --self-test\n"
+            f"sudo python3 sentinelbi_sensor.py {run}",
+        ),
+        Snippet(
+            "sensor-docker",
+            "Docker (Linux host)",
+            "shell",
+            "# NET_RAW lets it read packets, NET_ADMIN lets it enlarge the capture buffer.\n"
+            "docker run --rm --net=host --cap-add=NET_RAW --cap-add=NET_ADMIN python:3.12-slim sh -c \\\n"
+            f"  \"python -c \\\"import urllib.request as u; u.urlretrieve('{url}', '/tmp/s.py')\\\" "
+            f'&& python /tmp/s.py {run}"',
+        ),
+        Snippet(
+            "sensor-demo",
+            "Try it without admin rights",
+            "shell",
+            "# From the project folder: replay the bundled demo capture (synthetic traffic), mapped onto\n"
+            "# one of your addresses, to see the dashboards and reports fill. Nothing is captured.\n"
+            "python sensor/sentinelbi_sensor.py --read-pcap data/samples/sensor_demo.pcap --shift-to-now \\\n"
+            f"  --map-ip 10.20.0.5={_demo_host(cidr)} --api-url {api} --api-key {key}",
+        ),
+    ]
+    return snippets

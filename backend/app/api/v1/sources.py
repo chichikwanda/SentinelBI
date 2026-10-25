@@ -64,7 +64,7 @@ async def create_source(body: SourceCreate, admin: AdminDep, session: SessionDep
         )
     await session.commit()
 
-    setup = build_setup_info(body.method, api_key, get_settings())
+    setup = build_setup_info(body.method, api_key, get_settings(), body.cidr)
     base = SourceOut.model_validate(source)
     return SourceCreated(
         **base.model_dump(),

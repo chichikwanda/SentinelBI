@@ -50,7 +50,7 @@ async def test_netflow_source_gets_router_snippets_with_collector_address(
         f"dst-address={settings.collector_public_host} port={settings.collector_public_port}"
         in by_id["mikrotik"]
     )
-    assert src["cidr"] == "203.0.113.10/32"  # a bare IP is normalised to a host network
+    assert src["cidr"] == "203.0.113.10"  # a bare IP stays a plain host address (no "/32")
 
 
 async def test_single_host_source_creates_an_asset(client: httpx.AsyncClient, sessionmaker) -> None:

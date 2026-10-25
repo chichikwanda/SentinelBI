@@ -9,6 +9,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from app.db.models import Alert
+from app.services.analytics import format_bytes
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -31,6 +32,19 @@ def _cell(value: Any) -> str:
     """Neutralise spreadsheet formula injection: analyst labels are free text."""
     text = "" if value is None else str(value)
     return "'" + text if text.startswith(_FORMULA_PREFIXES) else text
+
+
+TRAFFIC_COLUMNS = ["ip", "sent_bytes", "received_bytes", "total_bytes", "flows", "last_seen"]
+
+
+def traffic_csv(hosts: list[dict[str, Any]]) -> str:
+    """Data volume per monitored host (bytes as the network carried them, IP header included)."""
+    buf = io.StringIO(newline="")
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(TRAFFIC_COLUMNS)
+    for h in hosts:
+        writer.writerow([_cell(h[c]) for c in TRAFFIC_COLUMNS])
+    return buf.getvalue()
 
 
 def alerts_csv(alerts: list[Alert]) -> str:
@@ -61,7 +75,8 @@ def alerts_csv(alerts: list[Alert]) -> str:
 
 def summary_pdf(data: dict[str, Any]) -> bytes:
     """``data``: org_name, generated_at, risk{score,severity}, open_by_severity, flows_24h,
-    model_version, alerts[{severity, attack_class, src_ip, dst_ip, count, risk, actions}]."""
+    model_version, alerts[{severity, attack_class, src_ip, dst_ip, count, risk, actions}], and
+    optionally traffic{total_bytes, monitored_sent_bytes, monitored_received_bytes, hosts[...]}."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet
@@ -99,6 +114,16 @@ def summary_pdf(data: dict[str, Any]) -> bytes:
         ],
         ["Flows in the last 24 h", f"{data['flows_24h']:,}"],
     ]
+    traffic = data.get("traffic")
+    if traffic:
+        kpis.append(
+            [
+                "Data transferred, last 24 h",
+                f"{format_bytes(traffic['total_bytes'])} in total; monitored hosts sent "
+                f"{format_bytes(traffic['monitored_sent_bytes'])} and received "
+                f"{format_bytes(traffic['monitored_received_bytes'])}",
+            ]
+        )
     table = Table(kpis, colWidths=[55 * mm, 110 * mm])
     table.setStyle(
         TableStyle(
@@ -109,7 +134,38 @@ def summary_pdf(data: dict[str, Any]) -> bytes:
             ]
         )
     )
-    story += [table, Spacer(1, 6 * mm), p("Open alerts (highest risk first)", "Heading2")]
+    story += [table, Spacer(1, 6 * mm)]
+    if traffic:
+        story.append(p("Data volume by monitored host (last 24 h)", "Heading2"))
+        if not traffic["hosts"]:
+            story.append(p("No monitored host has sent or received traffic yet."))
+        else:
+            host_rows = [["Host", "Sent", "Received", "Total", "Flows"]] + [
+                [
+                    h["ip"],
+                    format_bytes(h["sent_bytes"]),
+                    format_bytes(h["received_bytes"]),
+                    format_bytes(h["total_bytes"]),
+                    f"{h['flows']:,}",
+                ]
+                for h in traffic["hosts"]
+            ]
+            ht = Table(
+                host_rows, repeatRows=1, colWidths=[44 * mm, 30 * mm, 30 * mm, 30 * mm, 24 * mm]
+            )
+            ht.setStyle(
+                TableStyle(
+                    [
+                        ("FONTSIZE", (0, 0), (-1, -1), 8),
+                        ("GRID", (0, 0), (-1, -1), 0.3, colors.lightgrey),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                    ]
+                )
+            )
+            story.append(ht)
+        story.append(Spacer(1, 6 * mm))
+    story.append(p("Open alerts (highest risk first)", "Heading2"))
 
     if not data["alerts"]:
         story.append(p("No open alerts."))

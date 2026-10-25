@@ -14,7 +14,9 @@ from app.api.v1 import (
     recommendations,
     reports,
     risk,
+    sensor,
     sources,
+    traffic,
     users,
 )
 
@@ -31,5 +33,7 @@ for module in (
     models,
     evaluation,
     reports,
+    traffic,
+    sensor,
 ):
     api_router.include_router(module.router)

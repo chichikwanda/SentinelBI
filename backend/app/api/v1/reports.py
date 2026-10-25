@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Query, Response
 from sqlalchemy import func, select
 
 from app.core.deps import PrincipalDep, SessionDep
 from app.core.enums import AlertStatus
 from app.db.models import Alert, ModelRegistry, Organization, Recommendation, flows
+from app.services import analytics
 from app.services.prescriptive.engine import rank_score
-from app.services.reports import alerts_csv, summary_pdf
+from app.services.reports import alerts_csv, summary_pdf, traffic_csv
 from app.services.risk.aggregate import compute_org_risk
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -37,6 +38,23 @@ async def alerts_export(principal: PrincipalDep, session: SessionDep) -> Respons
         content=alerts_csv(list(alerts)),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="sentinelbi-alerts.csv"'},
+    )
+
+
+@router.get("/traffic.csv")
+async def traffic_export(
+    principal: PrincipalDep,
+    session: SessionDep,
+    hours: Annotated[int, Query(ge=1, le=720)] = 24,
+) -> Response:
+    """Sent and received bytes per monitored host over the last ``hours``."""
+    hosts = await analytics.host_volumes(
+        session, principal.org_id, hours * 60, 1000, datetime.now(UTC)
+    )
+    return Response(
+        content=traffic_csv(hosts),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="sentinelbi-traffic.csv"'},
     )
 
 
@@ -85,6 +103,8 @@ async def summary_export(principal: PrincipalDep, session: SessionDep) -> Respon
     active = (
         await session.execute(select(ModelRegistry.version).where(ModelRegistry.active))
     ).scalar()
+    traffic = await analytics.traffic_summary(session, org_id, 24 * 60, now)
+    traffic["hosts"] = await analytics.host_volumes(session, org_id, 24 * 60, 10, now)
 
     rows = []
     for a in alerts:
@@ -112,6 +132,7 @@ async def summary_export(principal: PrincipalDep, session: SessionDep) -> Respon
             "flows_24h": flows_24h or 0,
             "model_version": active or "none",
             "alerts": rows,
+            "traffic": traffic,
         }
     )
     return Response(

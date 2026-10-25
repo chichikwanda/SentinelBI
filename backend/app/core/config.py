@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     database_url: str
     redis_url: str
+    redis_timeout_seconds: float = 30.0  # how long one Redis command may take before it fails
 
     secret_key: SecretStr
     access_token_minutes: int = 60
@@ -58,6 +59,8 @@ class Settings(BaseSettings):
 
     # Models and risk
     models_dir: str = "/repo/ml/models"
+    # the sensor script handed out to users; mounted read-only into the API container
+    sensor_script_path: str = "/repo/sensor/sentinelbi_sensor.py"
     model_refresh_seconds: int = 30
     risk_snapshot_seconds: int = 60
     risk_decay_half_life_hours: float = 6.0
