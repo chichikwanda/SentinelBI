@@ -27,7 +27,7 @@ from app.services.inference.artifact import ModelLoadError, load_artifact_predic
 from app.services.inference.placeholder import PLACEHOLDER_VERSION
 from app.services.inference.predictor import classify
 from app.services.inference.registry import PredictorHolder, register_from_card, set_active
-from sentinelbi_ml.features import CORE_FEATURES, build_features
+from sentinelbi_ml.features import CORE_FEATURES, FEATURE_SPEC_VERSION, build_features
 
 SAMPLE = Path(__file__).resolve().parents[2] / "data" / "samples" / "synthetic_flows.csv"
 
@@ -65,6 +65,7 @@ def make_artifact(root: Path, kind: str = "dt") -> str:
     (tmp / "model.joblib").rename(root / version / "model.joblib")
     card = {
         "version": version, "algo": kind, "features": CORE_FEATURES, "classes": classes,
+        "feature_spec_version": FEATURE_SPEC_VERSION,
         "artifact": "model.joblib", "artifact_sha256": digest, "artifact_bytes": 1,
         "dataset": {"name": "synthetic sample (test)", "csv_sha256": "0" * 64},
         "training": {}, "metrics": {"test": {"f1_macro": 1.0}, "validation_selection": {}},
@@ -107,6 +108,21 @@ def test_model_trained_on_other_features_is_refused(models_dir: Path) -> None:
     card["features"] = [*CORE_FEATURES[:-1], "SOMETHING_ELSE"]
     card_path.write_text(json.dumps(card), encoding="utf-8")
     with pytest.raises(ModelLoadError, match="different features"):
+        read_card(version)
+
+
+@pytest.mark.parametrize("spec", [None, FEATURE_SPEC_VERSION - 1, FEATURE_SPEC_VERSION + 1])
+def test_model_trained_with_another_feature_spec_is_refused(
+    models_dir: Path, spec: int | None
+) -> None:
+    version = make_artifact(models_dir)
+    card_path = models_dir / version / "model_card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card.pop("feature_spec_version")  # None: a card from before the field existed (= spec v1)
+    if spec is not None:
+        card["feature_spec_version"] = spec
+    card_path.write_text(json.dumps(card), encoding="utf-8")
+    with pytest.raises(ModelLoadError, match="feature spec"):
         read_card(version)
 
 
@@ -244,3 +260,56 @@ async def test_sync_registers_models_and_only_replaces_the_placeholder(
         result = await sync_models(s)
         assert newer in result["registered"] and result["activated"] is None
         assert await active_version(s) == older
+
+
+class StubPredictor:
+    """Constant-confidence predictor: every flow is 'Recon/Scan' with probability ``p``."""
+
+    version = "stub-threshold"
+    classes = ("Benign", "Recon/Scan")
+
+    def __init__(self, p: float, alert_threshold: float | None) -> None:
+        self._p = p
+        self.alert_threshold = alert_threshold
+
+    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
+        return np.tile([1 - self._p, self._p], (len(features), 1))
+
+
+async def _flag_with(
+    client: httpx.AsyncClient, redis: Redis, sessionmaker: Any, settings: Settings, predictor: Any
+) -> int:
+    from app.workers.stream_consumer import consume_once, ensure_group
+
+    t = await register_org(client, "Threshold Org")
+    await add_source(client, t)
+    await ingest(client, t, scan_flows(12))
+    await ensure_group(redis, settings)
+    while await consume_once(redis, sessionmaker, predictor, settings, "thr-test", block_ms=50):
+        pass
+    return len(await alerts_for(client, t))
+
+
+async def test_models_calibrated_threshold_decides_whether_flagged_flows_alert(
+    client: httpx.AsyncClient, redis: Redis, sessionmaker: Any, settings: Settings
+) -> None:
+    assert settings.alert_min_probability == 0.7
+    # no calibrated threshold: the configured floor (0.7) applies, so p=0.9 alerts
+    assert await _flag_with(client, redis, sessionmaker, settings, StubPredictor(0.9, None)) == 1
+    # a calibrated threshold above the model's confidence suppresses the alert
+    assert await _flag_with(client, redis, sessionmaker, settings, StubPredictor(0.9, 0.95)) == 0
+    # a calibrated threshold below the floor never loosens the operator's setting
+    assert await _flag_with(client, redis, sessionmaker, settings, StubPredictor(0.65, 0.5)) == 0
+    # confident enough for both
+    assert await _flag_with(client, redis, sessionmaker, settings, StubPredictor(0.97, 0.95)) == 1
+
+
+def test_artifact_predictor_reads_the_threshold_from_the_card(models_dir: Path) -> None:
+    version = make_artifact(models_dir)
+    assert load_artifact_predictor(version).alert_threshold is None  # card has none
+
+    card_path = models_dir / version / "model_card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["alert_threshold"] = {"value": 0.93}
+    card_path.write_text(json.dumps(card), encoding="utf-8")
+    assert load_artifact_predictor(version).alert_threshold == 0.93

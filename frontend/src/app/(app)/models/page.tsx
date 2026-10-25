@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, Td, Th } from "@/components/ui/table";
 import { api } from "@/lib/client-api";
 import { formatDateTime, formatNumber } from "@/lib/format";
-import type { EvalMetrics, ModelRow } from "@/lib/types";
+import type { DatasetSummary, EvalMetrics, ModelRow } from "@/lib/types";
 
 const pct = (v: number | undefined) => (v === undefined || Number.isNaN(v) ? "–" : `${(v * 100).toFixed(1)}%`);
 const num = (v: number | undefined, d = 3) => (v === undefined || Number.isNaN(v) ? "–" : v.toFixed(d));
@@ -36,6 +36,33 @@ function Comparison({ validation }: { validation: Record<string, EvalMetrics> })
             <Td className="text-right tabular-nums">{pct(m.attack_detection_rate)}</Td>
             <Td className="text-right tabular-nums">{pct(m.false_alarm_rate)}</Td>
             <Td className="text-right tabular-nums">{m.train_seconds ?? "–"}</Td>
+          </tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
+
+function DatasetTable({ rows }: { rows: Record<string, DatasetSummary> }) {
+  return (
+    <Table>
+      <thead>
+        <tr>
+          <Th>Dataset / direction</Th>
+          <Th className="text-right">Flows</Th>
+          <Th className="text-right">Macro-F1</Th>
+          <Th className="text-right">False alarms</Th>
+          <Th className="text-right">Attack recall</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {Object.entries(rows).map(([name, d]) => (
+          <tr key={name}>
+            <Td className="font-medium">{name}</Td>
+            <Td className="text-right tabular-nums">{formatNumber(d.n)}</Td>
+            <Td className="text-right tabular-nums">{num(d.f1_macro)}</Td>
+            <Td className="text-right tabular-nums">{pct(d.false_alarm_rate)}</Td>
+            <Td className="text-right tabular-nums">{pct(d.attack_detection_rate)}</Td>
           </tr>
         ))}
       </tbody>
@@ -89,6 +116,67 @@ function ModelDetail({ model }: { model: ModelRow }) {
             </Table>
           </div>
         </>
+      )}
+      {model.metrics.alert_threshold && (
+        <div data-testid="alert-threshold">
+          <h3 className="mb-1 text-sm font-semibold">
+            Alert threshold {model.metrics.alert_threshold.value.toFixed(2)}
+            {!model.metrics.alert_threshold.calibration.target_met && " (target not reached)"}
+          </h3>
+          <p className="text-sm">
+            Chosen on the validation split by the rule &quot;{model.metrics.alert_threshold.calibration.rule}&quot;.
+            On the held-out test split it flags {pct(model.metrics.alert_threshold.test.false_alarm_rate)} of
+            benign flows and {pct(model.metrics.alert_threshold.test.attack_recall)} of attack flows.
+          </p>
+          <ul className="mt-1 text-xs text-black/60 dark:text-white/60">
+            {Object.entries(model.metrics.alert_threshold.test.far_by_dataset).map(([k, v]) => (
+              <li key={k}>
+                {k}: {pct(v)} of benign flows flagged,{" "}
+                {pct(model.metrics.alert_threshold!.test.attack_recall_by_dataset[k])} of attack flows
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {model.metrics.per_dataset_test && Object.keys(model.metrics.per_dataset_test).length > 1 && (
+        <div>
+          <h3 className="mb-1 text-sm font-semibold">Test split, by dataset</h3>
+          <DatasetTable rows={model.metrics.per_dataset_test} />
+        </div>
+      )}
+      {model.metrics.cross_dataset && Object.keys(model.metrics.cross_dataset).length > 0 && (
+        <div data-testid="cross-dataset">
+          <h3 className="mb-1 text-sm font-semibold">
+            Trained on one dataset, tested on another (this is what dataset shift costs)
+          </h3>
+          <DatasetTable rows={model.metrics.cross_dataset} />
+          <p className="mt-1 text-xs text-black/55 dark:text-white/55">
+            Same algorithm as the model above, refitted on the first dataset only and scored on the
+            second dataset&apos;s test split.
+          </p>
+        </div>
+      )}
+      {model.metrics.informal_probe && (
+        <div data-testid="probe">
+          <h3 className="mb-1 text-sm font-semibold">
+            Everyday-traffic probe: {model.metrics.informal_probe.benign} of{" "}
+            {model.metrics.informal_probe.total} called Benign
+          </h3>
+          <ul className="grid gap-x-6 gap-y-0.5 text-sm sm:grid-cols-2">
+            {model.metrics.informal_probe.flows.map((f) => (
+              <li key={f.flow} className="flex justify-between gap-3">
+                <span>{f.flow}</span>
+                <span className="tabular-nums">
+                  {f.label} ({f.probability.toFixed(2)})
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-black/55 dark:text-white/55">
+            {model.metrics.informal_probe.note}: it shows how ordinary-looking traffic is treated, not
+            how accurate the model is.
+          </p>
+        </div>
       )}
       {model.metrics.validation && (
         <div>

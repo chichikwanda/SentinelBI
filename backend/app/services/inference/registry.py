@@ -38,6 +38,16 @@ async def active_version(session: AsyncSession) -> str:
     return str(row[0]) if row else PLACEHOLDER_VERSION
 
 
+def _dataset_text(card: dict[str, Any]) -> str:
+    """Human-readable dataset line; understands both the single- and multi-dataset card formats."""
+    ds = card["dataset"]
+    if ds.get("sources"):
+        shas = ", ".join(f"{s['name']} sha256 {s['csv_sha256'][:12]}..." for s in ds["sources"])
+    else:
+        shas = f"csv sha256 {ds['csv_sha256'][:16]}..."
+    return f"{ds['name']} ({shas})"
+
+
 async def register_from_card(
     session: AsyncSession, version: str, activate: bool = False
 ) -> ModelRegistry:
@@ -45,6 +55,10 @@ async def register_from_card(
     existing = await session.get(ModelRegistry, version)
     metrics: dict[str, Any] = {
         "test": card["metrics"]["test"],
+        "per_dataset_test": card["metrics"].get("per_dataset_test"),
+        "cross_dataset": card["metrics"].get("cross_dataset"),
+        "informal_probe": card.get("informal_probe"),
+        "alert_threshold": card.get("alert_threshold"),
         "validation": card["metrics"]["validation_selection"],
         "latency_ms_per_500_flows": card.get("latency_ms_per_500_flows"),
         "latency_conditions": card.get("latency_conditions"),
@@ -59,9 +73,7 @@ async def register_from_card(
             algo=card["algo"],
             metrics=metrics,
             features=card["features"],
-            dataset=(
-                f"{card['dataset']['name']} (csv sha256 {card['dataset']['csv_sha256'][:16]}...)"
-            ),
+            dataset=_dataset_text(card),
             active=False,
         )
         session.add(existing)

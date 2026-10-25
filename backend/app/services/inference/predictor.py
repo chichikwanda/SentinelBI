@@ -25,6 +25,7 @@ class Predictor(Protocol):
         """
         ...
 
+    # Optional: ``alert_threshold: float | None`` (calibrated minimum probability for an alert).
     # Optional: predictors that can explain a single prediction also provide
     #   explain(features_one_row, class_index, top=5) -> list[{feature, value, contribution}] | None
     # (the worker looks it up with getattr, so the placeholder does not need it).

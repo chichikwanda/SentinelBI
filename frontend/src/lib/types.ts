@@ -162,6 +162,34 @@ export interface EvalMetrics {
   train_seconds?: number;
   latency_ms_per_500_flows?: number;
 }
+export interface DatasetSummary {
+  n: number;
+  accuracy: number;
+  f1_macro: number;
+  false_alarm_rate: number;
+  attack_detection_rate: number;
+  per_class_f1: Record<string, number>;
+}
+export interface AlertThreshold {
+  value: number;
+  calibration: {
+    rule: string;
+    target_met: boolean;
+    chosen: { false_alarm_rate: number; attack_recall: number; far_max: number };
+  };
+  test: {
+    false_alarm_rate: number;
+    attack_recall: number;
+    far_by_dataset: Record<string, number>;
+    attack_recall_by_dataset: Record<string, number>;
+  };
+}
+export interface ProbeResult {
+  note: string;
+  benign: number;
+  total: number;
+  flows: { flow: string; label: string; probability: number }[];
+}
 export interface ModelRow {
   version: string;
   algo: string;
@@ -174,6 +202,10 @@ export interface ModelRow {
     validation?: Record<string, EvalMetrics>;
     latency_ms_per_500_flows?: number | null;
     latency_conditions?: string | null;
+    per_dataset_test?: Record<string, DatasetSummary> | null;
+    cross_dataset?: Record<string, DatasetSummary> | null;
+    informal_probe?: ProbeResult | null;
+    alert_threshold?: AlertThreshold | null;
     classes?: string[];
     limitations?: string[];
     training?: { splits?: Record<string, number>; not_done?: string[]; models_compared?: string[] };

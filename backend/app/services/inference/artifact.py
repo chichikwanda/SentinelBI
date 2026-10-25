@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from app.core.config import get_settings
-from sentinelbi_ml.features import CORE_FEATURES
+from sentinelbi_ml.features import CORE_FEATURES, FEATURE_SPEC_VERSION
 
 log = logging.getLogger("inference.artifact")
 
@@ -49,14 +49,29 @@ def read_card(version: str) -> dict[str, Any]:
             f"model {version} was trained on different features than this build serves "
             f"({card.get('features')} != {CORE_FEATURES})"
         )
+    spec = card.get("feature_spec_version", 1)  # cards written before the field existed are v1
+    if spec != FEATURE_SPEC_VERSION:
+        raise ModelLoadError(
+            f"model {version} was trained with feature spec v{spec}; this build serves "
+            f"v{FEATURE_SPEC_VERSION}, so its inputs would differ from training: retrain it"
+        )
     return card  # type: ignore[no-any-return]
 
 
 class ArtifactPredictor:
     """Wraps a fitted scikit-learn-compatible classifier (Pipeline, tree ensemble, LightGBM...)."""
 
-    def __init__(self, version: str, estimator: Any, classes: Sequence[str]) -> None:
+    def __init__(
+        self,
+        version: str,
+        estimator: Any,
+        classes: Sequence[str],
+        alert_threshold: float | None = None,
+    ) -> None:
         self.version = version
+        # probability a flagged flow needs before it can raise an alert; calibrated on validation
+        # data at training time and stored in the model card (None: the global setting applies)
+        self.alert_threshold = alert_threshold
         self.classes: Sequence[str] = tuple(classes)
         self._estimator = estimator
 
@@ -112,4 +127,7 @@ def load_artifact_predictor(version: str) -> ArtifactPredictor:
     if hasattr(estimator, "set_params") and "n_jobs" in estimator.get_params():
         estimator.set_params(n_jobs=1)  # threads cost more than they save on 500-row batches
     log.info("loaded model %s (%s)", version, card["algo"])
-    return ArtifactPredictor(version, estimator, card["classes"])
+    threshold = (card.get("alert_threshold") or {}).get("value")
+    return ArtifactPredictor(
+        version, estimator, card["classes"], float(threshold) if threshold is not None else None
+    )
