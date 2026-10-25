@@ -17,24 +17,29 @@ const PLOT_W = W - M.left - M.right;
 const PLOT_H = H - M.top - M.bottom;
 const STRIP_Y = H - 14; // alert event strip (no y-scale: events, not a second measure)
 
-/** Flows per bucket as one area+line series; alert events are a separate strip beneath it,
- *  so there is a single y-axis (never dual-axis). Hover shows a crosshair and tooltip. */
+const pick = (p: TrafficPoint, metric: "flows" | "bytes") => (metric === "flows" ? p.flows : p.bytes);
+
+/** Flows (or bytes) per bucket as one area+line series; alert events are a separate strip beneath
+ *  it, so there is a single y-axis (never dual-axis). Hover shows a crosshair and tooltip. */
 export function TrafficChart({
   points,
   bucketMinutes,
+  metric = "flows",
 }: {
   points: TrafficPoint[];
   bucketMinutes: number;
+  metric?: "flows" | "bytes";
 }) {
+  const fmt = metric === "flows" ? formatNumber : formatBytes;
   const uid = useId();
   const ref = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
 
   const { max, xs, ys, line, area, ticksY, ticksX } = useMemo(() => {
     const n = points.length;
-    const max = niceMax(Math.max(1, ...points.map((p) => p.flows)));
+    const max = niceMax(Math.max(1, ...points.map((p) => pick(p, metric))));
     const xs = points.map((_, i) => M.left + (n <= 1 ? PLOT_W / 2 : (i / (n - 1)) * PLOT_W));
-    const ys = points.map((p) => M.top + PLOT_H - (p.flows / max) * PLOT_H);
+    const ys = points.map((p) => M.top + PLOT_H - (pick(p, metric) / max) * PLOT_H);
     const line = xs.map((x, i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${ys[i].toFixed(1)}`).join(" ");
     const base = M.top + PLOT_H;
     const area = n ? `${line} L${xs[n - 1].toFixed(1)},${base} L${xs[0].toFixed(1)},${base} Z` : "";
@@ -42,9 +47,9 @@ export function TrafficChart({
     const step = Math.max(1, Math.floor((n - 1) / 4));
     const ticksX = points.map((p, i) => ({ i, label: formatClock(p.t) })).filter(({ i }) => i % step === 0);
     return { max, xs, ys, line, area, ticksY, ticksX };
-  }, [points]);
+  }, [points, metric]);
 
-  const total = points.reduce((s, p) => s + p.flows, 0);
+  const total = points.reduce((s, p) => s + pick(p, metric), 0);
   const alertBuckets = points.filter((p) => p.alerts > 0);
 
   function onMove(e: React.MouseEvent<SVGSVGElement>) {
@@ -62,13 +67,13 @@ export function TrafficChart({
       <div className="mb-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs" style={{ color: "var(--viz-ink-2)" }}>
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-0.5 w-4 rounded" style={{ background: "var(--series-1)" }} />
-          Flows per {bucketMinutes === 1 ? "minute" : `${bucketMinutes} minutes`}
+          {metric === "flows" ? "Flows" : "Data"} per {bucketMinutes === 1 ? "minute" : `${bucketMinutes} minutes`}
         </span>
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--series-2)" }} />
           Alert raised
         </span>
-        <span className="ml-auto">{formatNumber(total)} flows in view</span>
+        <span className="ml-auto">{metric === "flows" ? `${formatNumber(total)} flows` : formatBytes(total)} in view</span>
       </div>
 
       <svg
@@ -76,7 +81,7 @@ export function TrafficChart({
         viewBox={`0 0 ${W} ${H}`}
         className="h-auto w-full"
         role="img"
-        aria-label={`Flows per bucket over time. ${formatNumber(total)} flows, ${alertBuckets.length} buckets with alerts.`}
+        aria-label={`${metric === "flows" ? "Flows" : "Data"} per bucket over time. ${metric === "flows" ? `${formatNumber(total)} flows` : formatBytes(total)}, ${alertBuckets.length} buckets with alerts.`}
         onMouseMove={onMove}
         onMouseLeave={() => setHover(null)}
       >
@@ -91,7 +96,7 @@ export function TrafficChart({
           <g key={t.y}>
             <line x1={M.left} x2={W - M.right} y1={t.y} y2={t.y} stroke="var(--viz-grid)" strokeWidth={1} />
             <text x={M.left - 8} y={t.y + 3.5} textAnchor="end" fontSize={10} fill="var(--viz-muted)">
-              {formatNumber(t.v)}
+              {fmt(t.v)}
             </text>
           </g>
         ))}
@@ -174,7 +179,7 @@ export function TrafficChart({
           </table>
         </div>
       </details>
-      <span className="sr-only">y-axis maximum {formatNumber(max)}</span>
+      <span className="sr-only">y-axis maximum {fmt(max)}</span>
     </div>
   );
 }

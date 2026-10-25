@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { BarList, type BarItem } from "@/components/charts/bar-list";
@@ -10,11 +11,13 @@ import { HealthPill } from "@/components/health-pill";
 import { SeverityBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Table, Td, Th } from "@/components/ui/table";
 import { api } from "@/lib/client-api";
 import { formatBytes, formatNumber } from "@/lib/format";
 import type {
   Alert,
+  HostVolume,
   Overview,
   ProtocolShare,
   Severity,
@@ -22,6 +25,7 @@ import type {
   SourceHealth,
   TopTalker,
   TrafficSeries,
+  TrafficSummary,
 } from "@/lib/types";
 import { cn, timeAgo } from "@/lib/utils";
 
@@ -50,6 +54,48 @@ function foldProtocols(rows: ProtocolShare[], keep = 6): BarItem[] {
     });
   }
   return items;
+}
+
+/** Shown until the first source exists: the shortest path from "I have an IP" to data. */
+function QuickStart() {
+  const router = useRouter();
+  const [ip, setIp] = useState("");
+  return (
+    <Card data-testid="quick-start">
+      <CardHeader>
+        <CardTitle>Start monitoring</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-black/75 dark:text-white/75">
+          Enter the IP address of a computer or network you manage. You get one command to run on it: a small
+          sensor that counts the traffic (it reads packet headers, never their contents). No router setup is
+          needed, and you will see how much data each host sends and receives.
+        </p>
+        <form
+          className="mt-3 flex flex-wrap gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            router.push(`/sources/new${ip.trim() ? `?ip=${encodeURIComponent(ip.trim())}` : ""}`);
+          }}
+        >
+          <Input
+            aria-label="IP address to monitor"
+            data-testid="quick-start-ip"
+            className="max-w-xs"
+            placeholder="192.168.1.20 or 192.168.1.0/24"
+            value={ip}
+            onChange={(e) => setIp(e.target.value)}
+          />
+          <Button type="submit" data-testid="quick-start-go">
+            Continue
+          </Button>
+        </form>
+        <p className="mt-3 text-xs text-black/60 dark:text-white/60">
+          Prefer your router? <Link className="underline" href="/sources/new?method=netflow">Use NetFlow instead</Link>.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function LiveDot({ active }: { active: boolean }) {
@@ -136,10 +182,21 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
 
 export default function DashboardPage() {
   const [minutes, setMinutes] = useState(60);
+  const [metric, setMetric] = useState<"flows" | "bytes">("flows");
   const overview = useQuery({ queryKey: ["overview"], queryFn: () => api<Overview>("overview"), refetchInterval: 5000 });
   const traffic = useQuery({
     queryKey: ["traffic", minutes],
     queryFn: () => api<TrafficSeries>(`traffic/timeseries?minutes=${minutes}`),
+    refetchInterval: 10000,
+  });
+  const volume = useQuery({
+    queryKey: ["traffic-summary", 1440],
+    queryFn: () => api<TrafficSummary>("traffic/summary?minutes=1440"),
+    refetchInterval: 10000,
+  });
+  const hosts = useQuery({
+    queryKey: ["traffic-hosts", minutes, "top"],
+    queryFn: () => api<HostVolume[]>(`traffic/hosts?minutes=${minutes}&limit=5`),
     refetchInterval: 10000,
   });
   const talkers = useQuery({
@@ -160,10 +217,13 @@ export default function DashboardPage() {
   const sources = useQuery({ queryKey: ["sources"], queryFn: () => api<Source[]>("sources"), refetchInterval: 10000 });
 
   const ov = overview.data;
+  const vol = volume.data;
+  const noSources = sources.data !== undefined && sources.data.length === 0;
 
   return (
     <>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {noSources && <QuickStart />}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardContent>
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-black/55 dark:text-white/55">
@@ -192,6 +252,16 @@ export default function DashboardPage() {
         </Card>
         <Stat label="Flows, last 24 h" value={ov ? formatNumber(ov.flows_24h) : "–"} sub="analysed by the model" testId="flows-24h" />
         <Stat
+          label="Data, last 24 h"
+          value={vol ? formatBytes(vol.total_bytes) : "–"}
+          sub={
+            vol && vol.monitored_hosts > 0
+              ? `Monitored hosts sent ${formatBytes(vol.monitored_sent_bytes)}, received ${formatBytes(vol.monitored_received_bytes)}`
+              : "moved across all sources"
+          }
+          testId="data-24h"
+        />
+        <Stat
           label="Sources receiving"
           value={ov ? `${ov.sources_receiving} / ${ov.sources_total}` : "–"}
           sub={ov?.model.version ? `Model: ${ov.model.version}` : "No model active"}
@@ -201,6 +271,26 @@ export default function DashboardPage() {
       <Card>
         <CardHeader>
           <CardTitle>Traffic</CardTitle>
+          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex gap-1" role="group" aria-label="Measure">
+            {(
+              [
+                ["flows", "Flows"],
+                ["bytes", "Data"],
+              ] as const
+            ).map(([key, label]) => (
+              <Button
+                key={key}
+                size="sm"
+                variant={metric === key ? "default" : "outline"}
+                aria-pressed={metric === key}
+                data-testid={`metric-${key}`}
+                onClick={() => setMetric(key)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
           <div className="flex gap-1" role="group" aria-label="Time window">
             {WINDOWS.map((w) => (
               <Button
@@ -214,10 +304,11 @@ export default function DashboardPage() {
               </Button>
             ))}
           </div>
+          </div>
         </CardHeader>
         <CardContent>
           {traffic.data ? (
-            <TrafficChart points={traffic.data.points} bucketMinutes={traffic.data.bucket_minutes} />
+            <TrafficChart points={traffic.data.points} bucketMinutes={traffic.data.bucket_minutes} metric={metric} />
           ) : (
             <div className="h-48" />
           )}
@@ -268,6 +359,47 @@ export default function DashboardPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Monitored hosts: data volume</CardTitle>
+          <Link href="/traffic" className="text-sm text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
+            All hosts and details
+          </Link>
+        </CardHeader>
+        <CardContent className="p-0">
+          {hosts.data && hosts.data.length === 0 ? (
+            <p className="p-4 text-sm text-black/60 dark:text-white/60" data-testid="no-hosts">
+              No monitored host has traffic in this window yet.
+            </p>
+          ) : (
+            <Table>
+              <thead>
+                <tr>
+                  <Th>Host</Th>
+                  <Th className="text-right">Sent</Th>
+                  <Th className="text-right">Received</Th>
+                  <Th className="text-right">Total</Th>
+                </tr>
+              </thead>
+              <tbody data-testid="top-hosts">
+                {(hosts.data ?? []).map((h) => (
+                  <tr key={h.ip}>
+                    <Td className="font-mono text-xs">
+                      <Link href={`/traffic?ip=${encodeURIComponent(h.ip)}`} className="text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
+                        {h.ip}
+                      </Link>
+                    </Td>
+                    <Td className="text-right tabular-nums">{formatBytes(h.sent_bytes)}</Td>
+                    <Td className="text-right tabular-nums">{formatBytes(h.received_bytes)}</Td>
+                    <Td className="text-right tabular-nums">{formatBytes(h.total_bytes)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Live alerts</CardTitle>
           <div className="flex items-center gap-3">
             <LiveDot active={!alerts.isError} />
@@ -301,8 +433,8 @@ export default function DashboardPage() {
         <CardContent className="p-0">
           {sources.data && sources.data.length === 0 ? (
             <p className="p-4 text-sm text-black/60 dark:text-white/60">
-              No sources yet. An IP address alone gives no traffic visibility: add a source and point your
-              router&apos;s NetFlow export at the collector.
+              No sources yet. Enter an IP above (or use Add source): a small sensor on that machine, or your
+              router&apos;s NetFlow export, is what brings its traffic in.
             </p>
           ) : (
             <Table>

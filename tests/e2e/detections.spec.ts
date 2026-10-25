@@ -84,6 +84,19 @@ test("real attack traffic produces alerts with ranked, referenced recommendation
   await page.getByRole("button", { name: "Acknowledge" }).click();
   await expect(page.getByText("status: acknowledged")).toBeVisible();
 
+  // The worker is still turning the last batches into alerts and recommendations. Wait until every
+  // flow is stored (alerts are committed in the same transaction as their flows), or the to-do list
+  // can grow between counting it and clicking "Mark done".
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get("/api/proxy/overview");
+        return res.ok() ? (await res.json()).flows_24h : -1;
+      },
+      { timeout: 60_000, message: "the worker should store every flow that was ingested" },
+    )
+    .toBe(flows.length);
+
   // marking a recommendation done moves it out of the to-do list
   await page.goto("/recommendations");
   const todo = page.getByTestId("recommendation");

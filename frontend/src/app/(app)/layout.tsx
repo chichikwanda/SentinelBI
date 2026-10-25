@@ -21,6 +21,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </Link>
             {[
               ["/dashboard", "Dashboard"],
+              ["/traffic", "Traffic"],
               ["/alerts", "Alerts"],
               ["/recommendations", "Actions"],
               ["/risk", "Risk"],

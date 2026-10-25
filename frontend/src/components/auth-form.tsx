@@ -26,7 +26,9 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
           ? { org_name: form.get("org_name"), email: form.get("email"), password: form.get("password") }
           : { email: form.get("email"), password: form.get("password") },
       );
-      router.replace("/dashboard");
+      // a registration that names an IP goes straight to the quick-start wizard with it filled in
+      const ip = isRegister ? String(form.get("monitor_ip") ?? "").trim() : "";
+      router.replace(ip ? `/sources/new?ip=${encodeURIComponent(ip)}` : "/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
       setBusy(false);
@@ -63,6 +65,22 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
               />
               {isRegister && <p className="mt-1 text-xs text-black/55 dark:text-white/55">At least 10 characters.</p>}
             </div>
+            {isRegister && (
+              <div>
+                <Label htmlFor="monitor_ip">IP address to monitor (optional)</Label>
+                <Input
+                  id="monitor_ip"
+                  name="monitor_ip"
+                  data-testid="register-ip"
+                  autoComplete="off"
+                  placeholder="192.168.1.20 or 192.168.1.0/24"
+                />
+                <p className="mt-1 text-xs text-black/55 dark:text-white/55">
+                  The computer or network you want to watch. Next you get one command to run on it, with no
+                  router setup, and you see how much data it sends and receives. Skip it to add one later.
+                </p>
+              </div>
+            )}
             {error && (
               <p role="alert" className="text-sm text-red-600 dark:text-red-400">
                 {error}

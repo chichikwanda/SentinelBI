@@ -1,13 +1,14 @@
+/** Decimal units (kB = 1000 B), as network tools and ISPs count; the backend's reports use the same. */
 export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
+  if (n < 1000) return `${n} B`;
+  const units = ["kB", "MB", "GB", "TB"];
+  let v = n / 1000;
   let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
     i += 1;
   }
-  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+  return `${v.toFixed(1)} ${units[i]}`;
 }
 
 export function formatNumber(n: number): string {

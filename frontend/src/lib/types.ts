@@ -80,6 +80,34 @@ export interface TopTalker {
   flows: number;
   bytes: number;
 }
+export interface TrafficSummary {
+  minutes: number;
+  flows: number;
+  total_bytes: number;
+  monitored_hosts: number;
+  monitored_sent_bytes: number;
+  monitored_received_bytes: number;
+}
+export interface HostVolume {
+  ip: string;
+  sent_bytes: number;
+  received_bytes: number;
+  total_bytes: number;
+  flows: number;
+  last_seen: string;
+}
+export interface HostDetail {
+  ip: string;
+  minutes: number;
+  bucket_minutes: number;
+  sent_bytes: number;
+  received_bytes: number;
+  total_bytes: number;
+  flows: number;
+  points: { t: string; sent: number; received: number; flows: number }[];
+  peers: { ip: string; bytes: number; flows: number }[];
+  services: { service: string; protocol: string; bytes: number; flows: number }[];
+}
 export interface ProtocolShare {
   protocol: string;
   flows: number;
