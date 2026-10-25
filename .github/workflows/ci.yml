@@ -52,6 +52,21 @@ jobs:
         # conftest.py defaults point at 127.0.0.1:5432 / :6379, which the service containers publish
         run: uv run --project backend pytest -q
 
+  sensor-python39:
+    name: Sensor runs on Python 3.9
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Replay the demo capture and count the flows
+        run: |
+          python -I sensor/sentinelbi_sensor.py --version
+          flows=$(python -I sensor/sentinelbi_sensor.py --read-pcap data/samples/sensor_demo.pcap --dry-run | wc -l)
+          echo "flow records: $flows"
+          test "$flows" -eq 177
+
   frontend:
     name: Frontend lint, types and build
     runs-on: ubuntu-latest

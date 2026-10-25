@@ -2,7 +2,7 @@
 line-length = 100
 target-version = "py311"
 extend-exclude = ["frontend", "data", "ml/models"]
-src = ["backend", "collector", "ml", "tests"]
+src = ["backend", "collector", "ml", "sensor", "tests"]
 
 [lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "ASYNC", "S", "RUF"]
@@ -17,9 +17,12 @@ known-third-party = ["alembic"]
 known-first-party = ["app", "sentinelbi_ml"]
 
 [lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "S311", "E501"]  # long SQL/data literals are fine in tests
+"tests/**" = ["S101", "S105", "S106", "S311", "S603", "E501"]  # long SQL/data literals, subprocess of our own scripts
+"sensor/**" = ["UP006", "UP007", "UP017", "UP035", "UP041", "UP045", "E501"]  # must run on Python 3.9: no X | None, tuple[...] at runtime
 "backend/alembic/**" = ["E501"]
+"backend/app/services/ingestion/snippets.py" = ["E501"]  # copy-paste commands are shown unwrapped
 "ml/src/**" = ["E501", "C408"]  # CLI scripts: long log lines, dict(key=value) probe tables
+"scripts/make_sensor_demo_pcap.py" = ["E501", "S311"]  # deterministic synthetic demo data
 "ml/src/synth_sample.py" = ["S311"]  # synthetic demo data, not security-sensitive randomness
 
 [format]
