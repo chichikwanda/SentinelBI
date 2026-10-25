@@ -556,3 +556,55 @@ and warns when that address belongs to a virtual adapter (Hyper-V, WSL, Docker) 
 uses, which was the user's first mistake. Options for IPv6 on Windows, none built: capture through Npcap (accurate,
 needs an install), reconstruct addresses from header-less packets (approximate), or capture on a Linux gateway or
 mirror port.
+
+---
+
+## ADR-027: IPv6 on Windows through libpcap/Npcap, removing a source, resend-proof ingest
+
+**Why.** Real use on a dual-stack Windows laptop showed the Windows sensor missing most of its browsing (IPv6),
+the user could not delete the sources created while finding their way, and ADR-025 had left a known weakness: a
+batch resent after a lost reply could be stored twice.
+
+**IPv6 on Windows: options weighed.**
+
+| Option | Verdict |
+|---|---|
+| Windows raw socket, IPv6 | Rejected, measured: packets arrive without their IPv6 header (the first bytes are the TCP header), a TCP-specific IPv6 raw socket cannot be opened, and the protocol and the destination of outgoing packets would have to be guessed |
+| `pktmon` (built into Windows) | Rejected: no live stream; it writes capture files, so live use would mean stop, convert, restart cycles with gaps, or parsing a text format that varies between builds |
+| libpcap/Npcap through `ctypes` | **Chosen.** Full headers for IPv4 and IPv6, exact lengths, a kernel drop counter, the same code path on Windows, macOS and (optionally) Linux, and still one dependency-free file because `ctypes` is in the standard library |
+
+Npcap is a kernel driver with its own licence: the free edition allows installs on up to 5 systems, forbids
+redistribution and has no silent installer, so it is **not bundled** and cannot be installed for the user. The sensor
+finds it in either install location, selects the device that owns the watched address, and when it is missing it
+falls back to the raw socket and says exactly what is lost and where to get Npcap. For uses beyond Npcap's free
+licence, capture on Linux, which needs nothing extra.
+
+**Verification.** The ctypes wrapper was run against real libpcap on Linux (a container with the library
+installed, capturing IPv4 and IPv6 transfers of 2 MB down and 0.3 MB up on a dual-stack Docker network): device
+and address discovery worked, the self-test passed, the libpcap backend and the native backend produced
+**byte-identical** flows for both families, and both were within 0.021% (transmit) and 0.006% (receive) of the
+kernel's interface counters. Pure logic (address parsing, link layers, device choice, backend selection and
+fallback) is unit-tested with a stand-in library. **Not verified:** the Windows-specific part (loading
+`wpcap.dll` from `System32\Npcap`, Npcap device names, `timeval` layout on Windows) because Npcap was not
+installed on the test machine; macOS is untested too.
+
+**Removing a source.** `DELETE /sources/{id}` (administrators, own organisation only; other organisations get 404).
+The API key stops working at once because it is looked up from the source row. Assets in the source are removed
+(cascade), alerts keep their data and lose the link (`SET NULL`), stored flows are kept as history, and the source's
+range stops counting as a monitored host range, so the Traffic page stops listing those hosts. The dashboard has a
+Remove button, shown to administrators, with a confirmation that says all of this. The web proxy needed to forward
+`DELETE`.
+
+**Resend-proof ingest.** A batch may carry an `Idempotency-Key`. Redis remembers the key (per source, for an hour)
+and queues the whole batch in one Lua script, so the check and the queueing are a single atomic step: a client that
+never saw the reply can resend the identical batch and it is acknowledged (`"duplicate": true`) but not queued
+again, even if the first attempt reached Redis, and six simultaneous identical requests queue it once. Without a
+key nothing changes. The sensor sends a hash of the batch body, so a resend always carries the same key, and reports
+how many batches the server had already seen. Consequence to know: replaying the same capture file with the same
+timestamps inside an hour is recognised as repeated data (use `--shift-to-now`). The CSV replay tool sends no key,
+because replaying the same file on purpose (demos, load tests) must keep working.
+
+**Found while building it.** A Docker build failed on a transient DNS error and my command line printed only the
+status lines, so I briefly tested old containers and saw "no deduplication"; checking the container's code and the
+build log found it. The lesson applied here: after a rebuild, confirm the running container has the change before
+trusting a live test.

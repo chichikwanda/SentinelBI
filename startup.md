@@ -84,7 +84,10 @@ program, the sensor, runs on the machine you want to watch and reports what it s
 only, never contents.
 
 1. Register with an IP in the optional field (or use the box on an empty dashboard, or **Add source**).
-2. The wizard shows commands for Windows, Linux and Docker with your API key and address filled in. Run the
+2. **On Windows, install Npcap first** (https://npcap.com, free for personal use; download it yourself and accept
+   the defaults, it cannot be bundled or installed silently). Without it the sensor still works but sees IPv4
+   only, and most browsing on a modern machine is IPv6. The wizard shows commands for Windows, Linux and Docker
+   with your API key and address filled in. Run the
    `--self-test` line first: it proves capture works on that machine. Run the last line to start reporting.
    Windows needs an **Administrator** PowerShell; Linux needs `sudo`. Python 3.9 or newer, nothing to install.
 3. Within seconds the wizard says "First flows received". Open **Traffic** to see how much that host sent and
@@ -101,6 +104,13 @@ Details, accuracy figures and limits are in `sensor/README.md`. The sensor scrip
 (`/api/v1/sensor/sentinelbi_sensor.py`, with its SHA-256 shown in the wizard), so another machine on your
 network only needs to reach the API address in `API_PUBLIC_URL` (set it to this machine's LAN address in `.env`
 when the sensor runs elsewhere).
+
+### Remove a source
+
+Dashboard, Sources table, **Remove** (administrators only). The API key stops working immediately, so a sensor
+or router using it stops reporting; the flows and alerts already stored are kept (alerts just lose the link to
+the source), and the source's address range is no longer a monitored host range, so the Traffic page stops
+listing those hosts.
 
 ## 6. Train a model (only when none exists)
 
@@ -174,7 +184,7 @@ share one test database. GitHub Actions runs lint, mypy, the pytest suite and th
 | The sensor's `--self-test` says it needs Administrator or root | Open an Administrator PowerShell (Windows) or use `sudo` (Linux). In Docker add `--cap-add=NET_RAW --cap-add=NET_ADMIN`. |
 | The self-test opens capture but does not see its own packet | Linux: add `--iface <name>`. Windows: add `--interface-ip <this machine's address>`. Windows capture is untested by the author: if it still fails, use Linux or replay a capture with `--read-pcap`. |
 | The sensor starts with a WARNING that the address is "not the one your internet traffic uses" | You entered a virtual adapter's address (vEthernet, WSL, Docker). Use the address of the adapter with a Default Gateway (`ipconfig` on Windows, `ip route get 1.1.1.1` on Linux), and register that address, because the Traffic page only lists hosts inside a registered source. |
-| On Windows the sensor runs but your browsing does not show up | Windows capture reads IPv4 only, and a dual-stack machine sends most browsing over IPv6 (the sensor says so at start-up). Generate IPv4 traffic to confirm it works, for example `ping -4 -n 5 1.1.1.1`; the volumes you see are a lower bound. |
+| On Windows the sensor runs but your browsing does not show up | Without Npcap, Windows capture reads IPv4 only, and a dual-stack machine sends most browsing over IPv6 (the sensor says so at start-up). Install Npcap from https://npcap.com and run the sensor again: it then says "capturing via libpcap/Npcap". `--list-devices` shows its capture devices; `--iface` picks one. To confirm the rest works first, generate IPv4 traffic: `ping -4 -n 5 1.1.1.1`. |
 | The sensor runs but the wizard never says "First flows received" | Check the sensor prints no "cannot reach" or "rejected the API key" lines, that `--api-url` is reachable from that machine, and that traffic involving the watched IP is actually passing that machine. Flows are reported when a connection ends or after 15 s of silence. |
 | The sensor warns that the kernel dropped packets | Byte counts are then a lower bound. Run as root, or add `--cap-add=NET_ADMIN` in Docker, so it can enlarge the capture buffer. |
 | No alerts after the replay | Wait a minute. Check `docker compose ps` (worker healthy), that a model is active (section 4), and `docker compose logs worker`. |
