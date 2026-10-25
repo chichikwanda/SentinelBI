@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import func, select
 
 from app.core.config import get_settings
@@ -98,6 +98,17 @@ async def _get_scoped(session: SessionDep, org_id: uuid.UUID, source_id: uuid.UU
 @router.get("/{source_id}", response_model=SourceOut)
 async def get_source(source_id: uuid.UUID, principal: PrincipalDep, session: SessionDep) -> Source:
     return await _get_scoped(session, principal.org_id, source_id)
+
+
+@router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_source(source_id: uuid.UUID, admin: AdminDep, session: SessionDep) -> Response:
+    """Remove a monitored source. Its API key stops working at once (the key is looked up from this
+    row), the assets inside it are removed, and alerts raised from it are kept but detach from it.
+    Flows already stored are kept: they are history, not configuration."""
+    source = await _get_scoped(session, admin.org_id, source_id)
+    await session.delete(source)
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{source_id}/health", response_model=SourceHealth)

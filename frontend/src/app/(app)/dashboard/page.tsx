@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { BarList, type BarItem } from "@/components/charts/bar-list";
 import { RiskGauge } from "@/components/charts/risk-gauge";
@@ -121,7 +121,13 @@ function Stat({ label, value, sub, testId }: { label: string; value: React.React
   );
 }
 
-function SourceRow({ source }: { source: Source }) {
+function SourceRow({
+  source,
+  onRemove,
+}: {
+  source: Source;
+  onRemove?: (source: Source) => void;
+}) {
   const { data: health } = useQuery({
     queryKey: ["source-health", source.id],
     queryFn: () => api<SourceHealth>(`sources/${source.id}/health`),
@@ -137,6 +143,19 @@ function SourceRow({ source }: { source: Source }) {
       </Td>
       <Td className="text-right tabular-nums">{health?.flows_total ?? "–"}</Td>
       <Td>{timeAgo(health?.last_seen ?? source.last_seen)}</Td>
+      {onRemove && (
+        <Td className="text-right">
+          <Button
+            size="sm"
+            variant="outline"
+            data-testid="remove-source"
+            aria-label={`Remove ${source.name}`}
+            onClick={() => onRemove(source)}
+          >
+            Remove
+          </Button>
+        </Td>
+      )}
     </tr>
   );
 }
@@ -215,6 +234,25 @@ export default function DashboardPage() {
     refetchInterval: LIVE_MS,
   });
   const sources = useQuery({ queryKey: ["sources"], queryFn: () => api<Source[]>("sources"), refetchInterval: 10000 });
+  const me = useQuery({ queryKey: ["me"], queryFn: () => api<{ role: string }>("auth/me") });
+  const queryClient = useQueryClient();
+  const removeSource = useMutation({
+    mutationFn: (id: string) => api<null>(`sources/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      for (const key of ["sources", "overview", "traffic-summary", "traffic-hosts"]) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+  // only an administrator can remove a source (the API enforces it; the button just is not offered)
+  const canRemove = me.data?.role === "admin";
+  function confirmRemove(source: Source) {
+    const ok = window.confirm(
+      `Remove "${source.name}" (${source.cidr})?\n\nIts API key stops working immediately, so a sensor or ` +
+        "router using it stops reporting. Flows and alerts already stored are kept.",
+    );
+    if (ok) removeSource.mutate(source.id);
+  }
 
   const ov = overview.data;
   const vol = volume.data;
@@ -446,11 +484,12 @@ export default function DashboardPage() {
                   <Th>Status</Th>
                   <Th className={cn("text-right")}>Flows</Th>
                   <Th>Last seen</Th>
+                  {canRemove && <Th />}
                 </tr>
               </thead>
               <tbody>
                 {(sources.data ?? []).map((s) => (
-                  <SourceRow key={s.id} source={s} />
+                  <SourceRow key={s.id} source={s} onRemove={canRemove ? confirmRemove : undefined} />
                 ))}
               </tbody>
             </Table>

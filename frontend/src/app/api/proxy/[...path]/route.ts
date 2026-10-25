@@ -35,7 +35,10 @@ async function forward(req: Request, ctx: Ctx) {
     },
     cache: "no-store",
   };
-  if (req.method !== "GET" && req.method !== "HEAD") init.body = await req.text();
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const body = await req.text();
+    if (body) init.body = body;
+  }
 
   const upstream = await fetch(target, init);
   return new Response(upstream.body, {
@@ -49,4 +52,4 @@ async function forward(req: Request, ctx: Ctx) {
   });
 }
 
-export { forward as GET, forward as POST, forward as PATCH };
+export { forward as GET, forward as POST, forward as PATCH, forward as DELETE };

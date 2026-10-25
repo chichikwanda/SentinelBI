@@ -4,7 +4,7 @@ import hashlib
 
 import httpx
 import pytest
-from conftest import Tenant, add_source, register_org
+from conftest import PASSWORD, Tenant, add_source, register_org, unique_email
 from sqlalchemy import text
 
 from app.core.config import Settings
@@ -94,3 +94,32 @@ async def test_health_starts_waiting(client: httpx.AsyncClient, tenant: Tenant) 
     assert body["state"] == "waiting"
     assert body["first_flows_received"] is False
     assert body["flows_total"] == 0
+
+
+async def test_only_an_administrator_can_remove_a_source_and_only_in_their_own_organisation(
+    client: httpx.AsyncClient,
+) -> None:
+    admin = await register_org(client)
+    src = await add_source(client, admin)
+    analyst = unique_email("analyst")
+    created = await client.post(
+        "/api/v1/users",
+        json={"email": analyst, "password": PASSWORD, "role": "analyst"},
+        headers=admin.headers,
+    )
+    assert created.status_code == 201
+    login = await client.post("/api/v1/auth/login", json={"email": analyst, "password": PASSWORD})
+    analyst_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    stranger = await register_org(client, "Other Co")
+
+    url = f"/api/v1/sources/{src['id']}"
+    assert (await client.delete(url, headers=analyst_headers)).status_code == 403  # not an admin
+    assert (
+        await client.delete(url, headers=stranger.headers)
+    ).status_code == 404  # not theirs: no leak
+    assert (await client.delete(url)).status_code == 401  # not signed in
+    assert (
+        len((await client.get("/api/v1/sources", headers=admin.headers)).json()) == 1
+    )  # untouched
+    assert (await client.delete(url, headers=admin.headers)).status_code == 204
+    assert (await client.delete(url, headers=admin.headers)).status_code == 404  # already gone

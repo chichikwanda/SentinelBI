@@ -369,3 +369,53 @@ async def test_pending_messages_of_a_crashed_consumer_are_reclaimed(
     )
     assert (await redis.xpending(settings.stream_flows, settings.stream_group))["pending"] == 0
     assert len(await alerts_for(client, tenant)) == 1
+
+
+async def test_removing_a_source_revokes_its_key_but_keeps_what_it_recorded(
+    client: httpx.AsyncClient,
+    tenant: Tenant,
+    redis: Redis,
+    sessionmaker: Any,
+    settings: Settings,
+    flow_factory: Any,
+) -> None:
+    await ingest(
+        client, tenant, scan_flows(12) + [flow_factory(src_port=50000 + i) for i in range(5)]
+    )
+    await drain(redis, sessionmaker, settings)
+    alerts_before = await alerts_for(client, tenant)
+    assert alerts_before and alerts_before[0]["id"]
+    flows_before = await scalar(
+        sessionmaker, "SELECT count(*) FROM flows WHERE org_id = :o", o=tenant.org_id
+    )
+    source_id = tenant.source["id"]
+
+    gone = await client.delete(f"/api/v1/sources/{source_id}", headers=tenant.headers)
+    assert gone.status_code == 204
+
+    # the key is dead at once, and the source is gone from every view
+    refused = await client.post(
+        "/api/v1/ingest/flows", json={"flows": [flow_factory()]}, headers=tenant.api_headers
+    )
+    assert refused.status_code == 401
+    assert (await client.get("/api/v1/sources", headers=tenant.headers)).json() == []
+    assert (
+        await client.get(f"/api/v1/sources/{source_id}", headers=tenant.headers)
+    ).status_code == 404
+    # ...but history stays: the flows, and the alerts (now detached from the source)
+    assert (
+        await scalar(sessionmaker, "SELECT count(*) FROM flows WHERE org_id = :o", o=tenant.org_id)
+        == flows_before
+    )
+    assert len(await alerts_for(client, tenant)) == len(alerts_before)
+    assert (
+        await scalar(
+            sessionmaker,
+            "SELECT count(*) FROM alerts WHERE org_id = :o AND source_id IS NOT NULL",
+            o=tenant.org_id,
+        )
+        == 0
+    )
+    # a removed source is no longer a monitored host range, so the Traffic view empties
+    summary = (await client.get("/api/v1/traffic/summary", headers=tenant.headers)).json()
+    assert summary["monitored_hosts"] == 0 and summary["total_bytes"] > 0
