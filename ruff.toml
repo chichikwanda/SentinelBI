@@ -19,7 +19,7 @@ known-first-party = ["app", "sentinelbi_ml"]
 [lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S311", "E501"]  # long SQL/data literals are fine in tests
 "backend/alembic/**" = ["E501"]
-"ml/src/**" = ["E501"]  # CLI scripts with long f-string log lines
+"ml/src/**" = ["E501", "C408"]  # CLI scripts: long log lines, dict(key=value) probe tables
 "ml/src/synth_sample.py" = ["S311"]  # synthetic demo data, not security-sensitive randomness
 
 [format]

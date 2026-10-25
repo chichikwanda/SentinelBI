@@ -41,6 +41,61 @@ The archive's other files are listed with checksums in `data/raw/nf-unsw-nb15-v2
 - The label mapping to the project taxonomy is in `ml/src/preprocess.py` (`ATTACK_TO_CLASS`).
   BruteForce has no examples in this dataset.
 
+## NF-CSE-CIC-IDS2018-v2 (downloaded and used for training: 2026-10-24)
+
+| | |
+|---|---|
+| Landing page | https://staff.itee.uq.edu.au/marius/NIDS_datasets/ ("NetFlow V2 Datasets") |
+| Host record | UQ Research Data Manager, dataset `ce5161d0-ef9c-11ed-827d-e762de186848`, fetched exactly like the UNSW one (`ml/src/download.py`) |
+| Licence | The same host text as above: academic research use granted after citing the paper; commercial use to be agreed with the authors (verbatim in `MANIFEST.json`) |
+| Citation | Same paper as NF-UNSW-NB15-v2 |
+
+| File | Bytes | SHA-256 |
+|---|---:|---|
+| `nf-cse-cic-ids2018-v2.zip` | 612,059,380 | `ad6307995d08ff8825d0193d5a1cfa61cf3dc4c6f223962ba3762a7775b5dc24` |
+| `.../data/NF-CSE-CIC-IDS2018-v2.csv` | 3,221,378,977 | `16a545a3e139b2e85d08b1b7d9d40328c3689a49d0deaafce6dcf8d7b63e1257` |
+| `.../data/NetFlow_v2_Features.csv` | 2,115 | `f20e86a939f9eb53b06ace15de4cc977ed61c02e538c6465efe72b635448e939` |
+
+**Integrity.** The archive is a BagIt bag. The CSV's SHA-1 `80ff7fd07e2bc31164197f07fe9d9606ee565f9a`
+matches the publisher's `manifest-sha1.txt`, and the zip CRC-32 of every member matches. **A first
+extraction reported a CRC mismatch on the CSV; a re-download and re-extraction verified. I could not
+reproduce or explain the failure** (this machine produced other unexplained transient faults the same
+day). The downloader now accepts a file only if the zip CRC *or* the publisher's SHA-1 matches.
+
+**Checked against the real file (not assumed):**
+
+- 18,893,708 flows: 16,635,567 benign and 2,258,141 attack (counted in one pass over the whole CSV).
+  Attack rows by the dataset's own label: DDOS attack-HOIC 1,080,858; DoS attacks-Hulk 432,648;
+  DDoS attacks-LOIC-HTTP 307,300; Bot 143,097; Infilteration (sic) 116,361; SSH-Bruteforce 94,979;
+  DoS attacks-GoldenEye 27,723; FTP-BruteForce 25,933; DoS attacks-SlowHTTPTest 14,116;
+  DoS attacks-Slowloris 9,512; Brute Force -Web 2,143; DDOS attack-LOIC-UDP 2,112;
+  Brute Force -XSS 927; SQL Injection 432.
+- The mapping to the project taxonomy follows the host's own grouping (`cse_cic_class` in
+  `ml/src/preprocess.py`): SSH + FTP brute force = 120,912 "BruteForce"; Brute Force -Web, -XSS and
+  SQL Injection = 3,502 "WebAttack"; both sums match the host's published table. `map_labels` fails
+  loudly on a label it does not know or when `Label` and `Attack` disagree.
+- **Training reads a subset**: every attack row and 8% of benign rows (3,587,089 rows), to fit
+  memory. Within that subset 445,386 rows (12.4%) are exact duplicates (same inputs and label) and
+  were removed; Botnet is 81.9% duplicates, leaving 25,956 distinct Bot flows.
+- **No timestamp column** and **bidirectional flows**, as for UNSW: random stratified split.
+
+## Flow-duration artefact in both NF-*-v2 datasets (measured 2026-10-24)
+
+`FLOW_DURATION_MILLISECONDS` holds values just under 2^32/1000 = 4,294,967 ms (the unsigned 32-bit
+wrap of a negative duration: 2^32/1000 minus a median of 16 to 27 ms). Share of flows with a value
+>= 4,290,000 ms, counted over the whole CSVs:
+
+| Dataset | Benign | Attack |
+|---|---:|---:|
+| NF-UNSW-NB15-v2 | 5.8% (134,195 of 2,295,222) | 10.5% (10,009 of 95,053) |
+| NF-CSE-CIC-IDS2018-v2 | 4.0% (660,900 of 16,635,567) | **82.6%** (1,864,677 of 2,258,141) |
+
+In CSE-CIC the value is a near-perfect attack marker, which is a property of that testbed's flow
+exporter and not of attacks; no real router exports it. Models trained on the raw value learn it
+(ADR-024). The shared feature module now maps such values to 0 (`WRAPPED_DURATION_MS`), and model
+cards record `feature_spec_version` so older artifacts are refused rather than served with different
+inputs.
+
 ## MITRE ATT&CK Enterprise (downloaded: 2026-10-24)
 
 | | |
@@ -53,8 +108,8 @@ The archive's other files are listed with checksums in `data/raw/nf-unsw-nb15-v2
 
 ## Not downloaded (planned in the project plan, URLs NOT verified)
 
-NF-CSE-CIC-IDS2018-v2, NF-ToN-IoT-v2, NF-BoT-IoT-v2, NF-UQ-NIDS-v2 (same UQ page, same host and
-download mechanism as above, so `download.py` can fetch them once their host ids are added);
+NF-ToN-IoT-v2, NF-BoT-IoT-v2, NF-UQ-NIDS-v2 (same UQ page, same host and download mechanism as
+above, so `download.py` can fetch them once their host ids are added);
 CIC-IDS2017 (corrected labels), CSE-CIC-IDS2018, UNSW-NB15, CISA KEV, NVD, EPSS, abuse.ch feeds.
 
 ## Not datasets: reference mappings written by hand

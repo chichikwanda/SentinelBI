@@ -6,6 +6,8 @@ ML      := uv run --project ml --extra train python -I -m
 MODEL   ?= $(shell ls -1t ml/models 2>/dev/null | grep -v '^\.' | head -1)
 FILE    ?= data/processed/demo_sample.csv
 DEMO_API_KEY ?= sbi_demo_dev_only_api_key_0000000000000000
+comma := ,
+space := $(empty) $(empty)
 
 .PHONY: help env up down logs ps migrate seed test lint fmt typecheck data train sample models replay e2e psql
 
@@ -45,11 +47,13 @@ fmt: env ## Auto-format and fix
 typecheck: env ## mypy only
 	$(TEST) mypy --config-file backend/pyproject.toml backend/app collector
 
-data: ## Download NF-UNSW-NB15-v2 (verified source; SHA-256 recorded in its MANIFEST.json)
-	@test -d data/raw/nf-unsw-nb15-v2 || $(ML) sentinelbi_ml.download nf-unsw-nb15-v2 --out data/raw
+DATASETS := nf-unsw-nb15-v2 nf-cse-cic-ids2018-v2
 
-train: data ## Compare 5 models, export the best, benchmark serving latency, register it (needs `uv`)
-	$(ML) sentinelbi_ml.train
+data: ## Download the two NF-v2 datasets (~650 MB; verified, checksummed in each MANIFEST.json)
+	@for d in $(DATASETS); do test -d data/raw/$$d || $(ML) sentinelbi_ml.download $$d --out data/raw || exit 1; done
+
+train: data ## Train on both datasets, compare models, export the best, benchmark it, register it (needs `uv`)
+	$(ML) sentinelbi_ml.train --datasets $(subst $(space),$(comma),$(DATASETS))
 	$(ML) sentinelbi_ml.evaluate ml/models/$(MODEL)
 	$(COMPOSE) run --rm migrate python -m app.services.inference.registry sync
 

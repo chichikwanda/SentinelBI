@@ -1,6 +1,7 @@
 """Export the chosen model with a model card (Phase 2).
 
-Layout: ``ml/models/<version>/{model.joblib, model_card.json, metrics.json, test_rows.npy}``.
+Layout: ``ml/models/<version>/{model.joblib, model_card.json, metrics.json, test_rows.npz}``.
+``test_rows.npz`` holds, per dataset key, the CSV data-row numbers of the held-out test split.
 The card records the SHA-256 of the artifact; the serving side verifies it before loading
 (joblib files are pickles, so only load artifacts you produced yourself).
 """
@@ -16,20 +17,39 @@ from typing import Any
 
 import numpy as np
 
-from sentinelbi_ml.features import CORE_FEATURES
+from sentinelbi_ml.features import BENIGN, CLASSES, CORE_FEATURES, FEATURE_SPEC_VERSION
 
-LIMITATIONS = [
-    "Trained on NF-UNSW-NB15-v2 only (a 2015 lab testbed). No cross-dataset generalisation test has been run yet.",
-    "Random stratified split: the dataset has no timestamps, so a time-aware split was impossible. "
-    "Flows from the same attack session can appear in train and test, so scores are optimistic.",
-    "Duplicate flows (identical inputs and label) were removed before splitting; benign traffic was "
-    "down-sampled in the training split only.",
-    "The BruteForce class has no examples in this dataset, so the model cannot predict it.",
-    "Trained on bidirectional flows (IN and OUT counters). Router NetFlow v5/v9 records are "
-    "unidirectional; the collector pairs reverse-direction records before scoring (ADR-015).",
-    "Not validated on any real SME traffic.",
-    "Dataset shift is likely to cause false alarms on real networks. Informal probe (hand-made flows, NOT a benchmark): typical HTTPS, HTTP, SMTP, DNS, UDP-stream and ICMP flows were all labelled Exploit/Other with probability 0.34-0.81, and only an SSH flow was Benign. The benign traffic in the training data comes from one lab testbed; train on more diverse data and calibrate on a consented pilot capture before trusting alerts.",
-]
+
+def limitations(
+    datasets: list[dict[str, Any]], classes: list[str], probe: dict[str, Any] | None
+) -> list[str]:
+    """Limitations text for the card. Everything data-dependent is computed from this run."""
+    names = " + ".join(d["name"] for d in datasets)
+    out = [
+        f"Trained on {names} only (lab testbeds). Not validated on any real SME traffic.",
+        "Random stratified split: the datasets have no timestamps, so a time-aware split was "
+        "impossible. Flows from the same attack session can appear in train and test, so scores "
+        "are optimistic.",
+        "Duplicate flows (identical inputs and label) were removed before splitting; large classes "
+        "were down-sampled in the TRAINING split only.",
+        "Trained on bidirectional flows (IN and OUT counters). Router NetFlow v5/v9 records are "
+        "unidirectional; the collector pairs reverse-direction records before scoring (ADR-015).",
+    ]
+    missing = [c for c in CLASSES if c != BENIGN and c not in classes]
+    if missing:
+        out.append(
+            f"No training examples for {', '.join(missing)}, so the model cannot predict them."
+        )
+    if len(datasets) == 1:
+        out.append("Only one dataset was used, so no cross-dataset generalisation was measured.")
+    if probe:
+        out.append(
+            f"Informal probe ({probe['note']}): {probe['benign']} of {probe['total']} everyday-traffic "
+            "flows (HTTPS, HTTP, SSH, SMTP, DNS, UDP stream, ICMP) were labelled Benign; the rest were "
+            "called attacks. Treat alerts on ordinary-looking traffic with suspicion and calibrate on "
+            "a consented pilot capture before trusting them."
+        )
+    return out
 
 
 def sha256_file(path: Path) -> str:
@@ -47,10 +67,12 @@ def export_model(
     estimator: Any,
     classes: list[str],
     metrics: dict[str, Any],
-    dataset: dict[str, Any],
+    datasets: list[dict[str, Any]],
     training: dict[str, Any],
-    test_rows: np.ndarray,
+    test_rows: dict[str, np.ndarray],
     feature_gain: dict[str, float] | None = None,
+    probe: dict[str, Any] | None = None,
+    alert_threshold: dict[str, Any] | None = None,
 ) -> Path:
     import joblib
 
@@ -60,23 +82,36 @@ def export_model(
     artifact = tmp / "model.joblib"
     joblib.dump(estimator, artifact, compress=3)
     digest = sha256_file(artifact)
-    version = f"{algo}-nfunsw2-{stamp}-{digest[:8]}"
+    tag = (
+        "nfunsw2"
+        if len(datasets) == 1 and datasets[0]["key"] == "nf-unsw-nb15-v2"
+        else f"nfmulti{len(datasets)}"
+    )
+    version = f"{algo}-{tag}-{stamp}-{digest[:8]}"
 
     card = {
         "version": version,
         "algo": algo,
         "features": CORE_FEATURES,
+        "feature_spec_version": FEATURE_SPEC_VERSION,
         "classes": classes,
         "artifact": "model.joblib",
         "artifact_sha256": digest,
         "artifact_bytes": artifact.stat().st_size,
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "dataset": dataset,
+        "dataset": {"name": " + ".join(d["name"] for d in datasets), "sources": datasets},
         "training": training,
-        "metrics": {"validation_selection": metrics.get("validation"), "test": metrics.get("test")},
+        "metrics": {
+            "validation_selection": metrics.get("validation"),
+            "test": metrics.get("test"),
+            "per_dataset_test": metrics.get("per_dataset_test"),
+            "cross_dataset": metrics.get("cross_dataset"),
+        },
         "latency_ms_per_500_flows": metrics.get("latency_ms"),
         "feature_gain": feature_gain,
-        "limitations": LIMITATIONS,
+        "informal_probe": probe,
+        "alert_threshold": alert_threshold,
+        "limitations": limitations(datasets, classes, probe),
         "environment": {"python": platform.python_version()},
     }
     final = out_root / version
@@ -85,8 +120,21 @@ def export_model(
     tmp.rename(final)
     (final / "model_card.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
     (final / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    np.save(final / "test_rows.npy", np.sort(test_rows))
+    np.savez(final / "test_rows.npz", **{k: np.sort(v) for k, v in test_rows.items()})
     return final
+
+
+def amend_card(model_dir: Path, **metric_fields: Any) -> None:
+    """Add results that finish after the model was exported (e.g. the optional cross-dataset check)
+    to ``metrics.json`` and the card, so a late failure can never lose the exported model."""
+    card_path = model_dir / "model_card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["metrics"].update(metric_fields)
+    card_path.write_text(json.dumps(card, indent=2), encoding="utf-8")
+    metrics_path = model_dir / "metrics.json"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics.update(metric_fields)
+    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
 
 def main() -> int:

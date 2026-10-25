@@ -139,6 +139,22 @@ def test_missing_input_columns_fail_loudly() -> None:
         build_features(df)
 
 
+def test_wrapped_durations_are_treated_as_unknown_in_training_and_serving() -> None:
+    """NF-*-v2 encode a negative duration as ~2**32/1000 ms; no real exporter does (see features.py)."""
+    rows = [
+        {**EDGE_ROWS[0], "FLOW_DURATION_MILLISECONDS": str(v), "IN_PKTS": "10", "IN_BYTES": "1000"}
+        for v in (0, 1500, 4_294_967, 4_294_940, 4_289_999)
+    ]
+    train = build_features(_training_frame(rows))
+    serve = _serving_frame(rows)
+    pd.testing.assert_frame_equal(
+        train.reset_index(drop=True), serve.reset_index(drop=True), check_exact=True
+    )
+    # wrapped values look like a zero-length flow; a long but plausible flow is kept as is
+    assert train["FLOW_DURATION_MS"].tolist() == [0.0, 1500.0, 0.0, 0.0, 4_289_999.0]
+    assert train["BYTES_PER_SEC"].iloc[2] == train["BYTES_PER_SEC"].iloc[0]
+
+
 def test_port_buckets() -> None:
     buckets = port_bucket(pd.Series([0, 1, 1023, 1024, 49151, 49152, 65535]))
     assert buckets.tolist() == [0, 1, 1, 2, 2, 3, 3]

@@ -4,15 +4,30 @@ Everything that turns a flow record into a model input vector lives here. The AP
 worker imports this module (``sentinelbi_ml.features``); ``train.py`` imports the same
 one. ``tests/backend/test_feature_parity.py`` proves both paths give identical vectors.
 
-NOTE (unverified until Phase 2): the raw column names below follow the NetFlow-v2
-(NF-*-v2) naming given in the project plan. They must be checked against the real CSV
-headers when the datasets are downloaded. That is a one-place change: ``CANONICAL_TO_RAW``.
+The raw column names below follow the NetFlow-v2 (NF-*-v2) naming and were checked against the
+real CSV headers (data/DATASETS.md). Changing how any feature is computed changes what a trained
+model means, so bump ``FEATURE_SPEC_VERSION``: the model loader refuses artifacts whose card
+records a different version.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+# Bumped whenever the meaning of a feature changes (not only its name). Stored in every model card.
+#   1: raw duration passed through
+#   2: wrapped durations (see WRAPPED_DURATION_MS) are treated as unknown, i.e. 0
+FEATURE_SPEC_VERSION = 2
+
+# The NF-*-v2 datasets encode a NEGATIVE flow duration (last packet before the first) as an unsigned
+# 32-bit wrap: 2**32/1000 = 4,294,967 ms minus the magnitude (median ~30 ms). 82.6% of the attack
+# flows in NF-CSE-CIC-IDS2018-v2 carry it against 4.0% of its benign flows (data/DATASETS.md), so a
+# model that sees the raw value learns a quirk of that testbed's flow exporter, not attack
+# behaviour, and real exporters never produce it. Nothing in a router's export legitimately lasts
+# this long (active timeouts are minutes), so such values are mapped to 0, the same as any other
+# negative duration.
+WRAPPED_DURATION_MS = 4_290_000.0
 
 # --- label taxonomy (plan section 5.1) ---------------------------------------------
 BENIGN = "Benign"
@@ -98,6 +113,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     raw = df[FEATURE_INPUT_COLUMNS].apply(pd.to_numeric, errors="coerce").astype("float64")
     raw = raw.fillna(0.0).clip(lower=0.0)
+    duration = raw["FLOW_DURATION_MILLISECONDS"]
+    raw["FLOW_DURATION_MILLISECONDS"] = duration.where(duration < WRAPPED_DURATION_MS, 0.0)
 
     dur_s = np.maximum(raw["FLOW_DURATION_MILLISECONDS"], 1.0) / 1000.0
     total_bytes = raw["IN_BYTES"] + raw["OUT_BYTES"]

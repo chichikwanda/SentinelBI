@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from sentinelbi_ml.features import CANONICAL_TO_RAW
-from sentinelbi_ml.preprocess import find_csv, load_raw, map_labels
+from sentinelbi_ml.preprocess import DEFAULT_DATASET, SPECS, find_csv, load_rows, map_labels
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,19 +35,25 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     card = json.loads((args.model_dir / "model_card.json").read_text(encoding="utf-8"))
-    test_rows = np.load(args.model_dir / "test_rows.npy")
-    raw = map_labels(
-        load_raw(find_csv(args.data_root), extra_columns=("IPV4_SRC_ADDR", "IPV4_DST_ADDR"))
-    )
-    test = raw[raw["row"].isin(set(test_rows.tolist()))]
+    npz = args.model_dir / "test_rows.npz"
+    if npz.exists():  # one array of held-out CSV row numbers per dataset
+        loaded = np.load(npz)
+        test_rows = {k: loaded[k] for k in loaded.files}
+    else:  # original single-dataset export
+        test_rows = {DEFAULT_DATASET: np.load(args.model_dir / "test_rows.npy")}
 
     rng = np.random.default_rng(args.seed)
     parts = []
-    for label, group in test.groupby("label"):
-        want = args.benign if label == "Benign" else args.per_attack_class
-        take = min(want, len(group))
-        parts.append(group.iloc[rng.choice(len(group), size=take, replace=False)])
-        print(f"  {label:16s} {take:5d} of {len(group):,} test flows")
+    for key, rows in test_rows.items():
+        raw = load_rows(
+            find_csv(args.data_root, key), set(rows.tolist()), ("IPV4_SRC_ADDR", "IPV4_DST_ADDR")
+        )
+        test = map_labels(raw, SPECS[key])
+        for label, group in test.groupby("label"):
+            want = args.benign if label == "Benign" else args.per_attack_class
+            take = min(want // len(test_rows) if label == "Benign" else want, len(group))
+            parts.append(group.iloc[rng.choice(len(group), size=take, replace=False)])
+            print(f"  {key:24s} {label:16s} {take:5d} of {len(group):,} test flows")
     sample = pd.concat(parts).sample(frac=1.0, random_state=args.seed)
 
     cols = [*CANONICAL_TO_RAW.values(), "Label", "Attack"]
