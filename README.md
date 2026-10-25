@@ -13,17 +13,33 @@ reports, a model registry, and the SUS/TAM questionnaires for the evaluation.
 
 ## What the model can and cannot do (measured)
 
-The active model is a Random Forest trained on NF-UNSW-NB15-v2 with the NetFlow-compatible core
-features. On its held-out test split it flags attacks very well (99.8% of attack flows flagged, 0.5%
-of benign flows falsely flagged, macro ROC-AUC 0.996) and recognises exploits (F1 0.88) and scans
-(F1 0.86), but is **weak at telling DoS (0.48), backdoor (0.30) and web attacks (0.14) apart**. The
-split is random (the dataset has no timestamps), so scores are optimistic; there is no
-cross-dataset test and no evaluation on real SME traffic yet. **Expect false alarms on real
-networks:** an informal probe (hand-made flows, not a benchmark) showed typical HTTPS, HTTP,
-SMTP, DNS, UDP and ICMP flows being labelled as attacks (probability 0.34-0.81), because the
-benign traffic in the training data comes from one lab testbed. The fix is more diverse training
-data plus calibration on a consented pilot capture; it is the first thing to do next. Details, limitations and what was
-deliberately not done: the model card (Models page) and ADR-016b.
+The active model is a Random Forest trained on two public NetFlow datasets (NF-UNSW-NB15-v2 and
+NF-CSE-CIC-IDS2018-v2) with the router-compatible core features, plus an **alert threshold (0.81)
+calibrated on validation data**. On the held-out test split, at that threshold:
+
+| | False alarms (benign flows flagged) | Attack flows flagged |
+|---|---|---|
+| Overall | 0.92% | **44%** |
+| UNSW part / CSE-CIC part | 0.27% / 1.97% | 87% / 43% |
+
+So it keeps false alarms low **by missing more than half of attack flows**. Alerting is window-based
+(several flagged flows from one source), so sustained attacks still alert; sparse ones will be missed.
+Per-class F1 at argmax: BruteForce 1.00, Botnet 0.99, Recon 0.83, DoS/DDoS 0.73, Exploit/Other 0.37,
+WebAttack 0.01.
+
+**The important caveat:** attacks learned on one dataset do not transfer to the other. Refitted on
+UNSW only and tested on CSE-CIC, the same algorithm raises 65% false alarms (and finds 37% of the
+attacks); refitted on CSE-CIC only and tested on UNSW it detects 2.9% of attacks. So **detection on a
+new network is unproven and probably poor**; only a consented pilot capture can establish it, and
+calibrating on that capture is the next step. Splits are random (the datasets have no timestamps), so
+in-distribution scores are optimistic.
+
+Two further facts. Both datasets carry an exporter artefact in the flow duration (wrapped negative
+values: 83% of CSE-CIC attack flows against 4% of its benign flows); it had inflated the DoS/DDoS
+scores and is now neutralised in the shared feature code (ADR-024). Scoring 500 flows takes about
+21 ms (single thread, idle machine; target 50 ms). Everything above is measured, recorded in the
+model card (Models page), and was reproduced by a second independent training run (identical
+artifact SHA-256), because the development machine has faulty memory (ADR-024).
 
 ## Run it
 
@@ -50,13 +66,14 @@ With `SEED_DEMO_DATA=true` (the `.env.example` default, dev only) a demo organis
 
 ### Get a model, then see detections
 
-The trained model is not committed (it is reproducible and 29 MB). One command downloads the
-dataset (verified source, checksummed), compares five models, exports the best, benchmarks it and
-registers it; the next ones make a demo CSV from the held-out test rows and replay it:
+The trained model is not committed (it is reproducible and ~50 MB). One command downloads the two
+datasets (verified sources, ~650 MB, checksummed), compares models, calibrates the alert threshold,
+exports the best, benchmarks it and registers it; the next ones make a demo CSV from the held-out
+test rows and replay it:
 
 ```bash
-make train      # ~15 min on 4 cores: download + train + benchmark + register
-make sample     # data/processed/demo_sample.csv: 2,962 REAL flows from the test split
+make train      # ~15 min on 4 cores plus ~15 min of download on a slow link
+make sample     # data/processed/demo_sample.csv: ~4,200 REAL flows from the test splits
 make replay     # post them through the ingest API with the demo source's key
 ```
 
@@ -138,11 +155,30 @@ both paths build identical vectors.
 - Model artifacts are checksum-verified before loading; switching the platform-wide model needs a
   platform administrator (`PLATFORM_ADMIN_EMAILS`).
 - CSV exports neutralise spreadsheet formulas. Active scanning is not implemented.
-- `ENV=prod` refuses to start with dev-only secrets, demo seeding or the demo platform admin.
+- `ENV=prod` refuses to start with dev-only secrets, demo seeding or the demo platform admin, and
+  logs a warning if open registration is left on.
+- Sign-in locks an account for 15 minutes after 8 failed attempts (per account, not per address:
+  browsers reach the API through the web container, so an address limit would lock everyone out);
+  open sign-up is capped at 20 organisations per hour across the deployment (ADR-025).
+
+## Operations
+
+Start, stop, train, back up and troubleshoot: see [startup.md](startup.md). `scripts/backup.sh` writes a
+database dump and the trained models; `scripts/restore.sh` restores into a scratch database so a backup
+can be verified without touching live data (row counts and hypertables were checked after a real restore).
+Container logs are capped at 3 x 10 MB each. Ingest capacity on a 4-core laptop, measured by draining a
+queued backlog: about 1,700 flows/s on benign traffic and 1,350 on attack-heavy traffic with one worker;
+about 2,400 and 2,050 with two (`WORKER_REPLICAS=2`). GitHub Actions runs lint, mypy, the pytest suite
+against real TimescaleDB and Redis, and the frontend build on every push.
 
 ## Known gaps
 
-The CIS Controls and NIST CSF reference titles are unverified (the ATT&CK ones are checked against the
-official data); the selected Random Forest cannot explain individual alerts; classification of
-DoS/backdoor/web attacks is weak; no real-router NetFlow test has been run; the UI polls every 3 s
-(no SSE); no login rate-limiting; open registration by default. See ADR-014..022 for the rest.
+Detection quality on a new network is unproven (see the model section and ADR-023/024); more than half
+of attack flows go unflagged at the calibrated threshold; the Random Forest cannot explain individual
+alerts; ingest capacity was measured by draining a queued backlog on one laptop, not by a long soak or a
+load test from real exporters; the CIS Controls and NIST CSF titles are unverified (the ATT&CK ones are
+checked against the official data); no real-router NetFlow test has been run; the UI polls every 3 s (no
+SSE); sign-in throttling is per account only, and a known account can be locked for 15 minutes by
+someone who fails on purpose; open registration is on by default (set `ALLOW_REGISTRATION=false` for a
+public deployment); the Playwright specs need a trained model and are not run in CI; there is no
+off-machine backup schedule, only the scripts. See ADR-014..025 for the rest.

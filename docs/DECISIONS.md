@@ -253,3 +253,208 @@ The real-data demo sample is generated locally from the held-out TEST split (`ma
 never committed, because it is a subset of a dataset licensed for academic use with citation. It is
 enriched with attacks (the real data is ~96% benign) purely so a demo has something to show; that is
 a presentation choice, not a performance claim.
+
+---
+
+# Third session: a second dataset, and what it showed
+
+## ADR-023: NF-CSE-CIC-IDS2018-v2 added; the false-alarm problem is real and not solved by more data alone
+
+> **Partly superseded by ADR-024.** The numbers below come from a model trained on a flawed duration
+> feature (kept for the record; that model no longer loads). The conclusions about false alarms and
+> dataset shift still hold; the 85 ms latency figure was a measurement artefact.
+
+**Why.** The first model (UNSW only) labelled ordinary-looking traffic as attacks (ADR-016b). A second,
+more enterprise-like dataset was the obvious remedy.
+
+**Data.** NF-CSE-CIC-IDS2018-v2 (host id `ce5161d0-ef9c-11ed-827d-e762de186848`, open access, same
+academic-use licence), 612 MB zipped, 3.2 GB CSV. Read in chunks keeping EVERY attack row and 8% of benign
+rows (3,587,089 rows; 3,141,703 after exact-duplicate removal, of which 1.70M are DoS/DDoS). Label mapping
+follows the host's own grouping (checked against its published table: SSH + FTP brute force = its
+"BruteForce" 120,912; Brute Force-Web + -XSS + SQL Injection = its "Web Attacks" 3,502). This dataset
+finally gives the model BruteForce examples. Verification: see data/DATASETS.md (CRC-32 and the publisher's
+SHA-1 both match; a first extraction reported a CRC mismatch that I could not reproduce or explain).
+
+**Training.** Same pipeline and selection rule as before (validation macro-F1), models DT / RF / LightGBM
+(LR and XGBoost were not competitive in the first run and cost a lot of time), per-class training caps
+(benign 400k, others 150k, TRAIN split only). Random Forest again won (validation macro-F1 0.711; LightGBM
+0.704, DT 0.701). Test split (766,147 flows, evaluated once):
+
+| Combined RF, test | |
+|---|---|
+| Macro-F1 | 0.712 (not comparable with the 0.610 of the UNSW-only model: different data and classes) |
+| Per-class F1 | BruteForce 1.000, Botnet/Backdoor 0.989, DoS/DDoS 0.875, Recon/Scan 0.835, Exploit/Other 0.369, WebAttack 0.011 |
+| False-alarm rate, plain argmax | **17.3%** overall: UNSW part 0.5%, **CSE-CIC part 44.2%** |
+| Serving latency | 85 ms per 500 flows as first recorded; re-measured later under controlled conditions the same model takes 21 ms, so 85 ms was a loaded-machine artefact (ADR-024) |
+
+**Dataset shift, measured (leave-one-dataset-out, same algorithm refitted on one dataset):**
+
+| Train -> test | Macro-F1 | False alarms | Attack recall |
+|---|---|---|---|
+| UNSW -> CSE-CIC | 0.065 | 67.8% | 85.2% |
+| CSE-CIC -> UNSW | 0.144 | 1.7% | **1.5%** |
+
+Attacks learned on one testbed do not transfer to the other with the router-compatible core features, and
+the benign traffic of one testbed looks "attack-like" to a model trained on the other. The in-distribution
+numbers (for example BruteForce 1.000) partly reflect scripted attack tools with fixed ports and sizes and
+should not be read as real-world detection quality. (An earlier run's cross-dataset figure of 0.161 was
+wrong: the model lacked a class, so its probability columns were misaligned; they are now padded to the full
+class list.)
+
+**What was done about false alarms: an alert threshold calibrated on VALIDATION data.** Rule fixed in advance:
+the smallest probability threshold in 0.50-0.99 whose false-alarm rate is <= 2% on every dataset. It is 0.82
+(validation false alarms 0.82% worst dataset). Reported once on the test split:
+
+| Test split, flow level, at threshold 0.82 | False alarms | Attack recall |
+|---|---|---|
+| Overall | 0.46% | **45.0%** |
+| UNSW part | 0.26% | 86.4% |
+| CSE-CIC part | 0.78% | 43.5% |
+
+So false alarms fall by a factor of ~38 and **more than half of attack flows are no longer flagged**. This is
+a trade, not a free fix. The worker uses `max(ALERT_MIN_PROBABILITY, model threshold)`, and alerting is
+window-based (>= 5 flagged flows and >= 20% of the source's flows), so a sustained attack can still alert
+at 45% flow recall, but short or sparse attacks will be missed. The everyday-traffic probe now calls 4 of 8
+flows Benign and the other four are low-confidence (0.45-0.60) calls, all below the threshold.
+
+**Consequence for the thesis and the MVP.** The system's detection quality on a NEW network is unproven and
+probably poor; only a consented pilot capture can establish it, and calibrating the threshold (and the share
+gate) on that capture is the realistic next step. Other levers, not tried: sensor-mode features
+(payload-free but richer than NetFlow), anomaly detection against each network's own baseline, per-network
+retraining from analyst feedback.
+
+**Process notes.** This machine produced several unexplained transient faults in one session (two zip CRC
+mismatches that later verified, a 64 PiB array allocation inside scikit-learn, a Node segfault); every result
+that depends on them was re-run or re-verified. A memory test of the host is advisable. `train.py` now drops
+raw columns once features exist, exports the model BEFORE the optional cross-dataset check, and records a
+failure of that check instead of crashing, because the first full run lost its model to such a fault.
+
+---
+
+## ADR-024: a flow-duration artefact in both datasets; feature spec v2; data integrity on a faulty machine
+
+**How it was found.** Writing the CSE-CIC entry of data/DATASETS.md, the feature ranges showed
+`FLOW_DURATION_MILLISECONDS` with a median of 4,294,663 ms (UNSW: 0). Counted over the whole CSVs, the
+share of flows whose duration is >= 4,290,000 ms (the unsigned 32-bit wrap of a negative duration:
+2^32/1000 ms minus a median of 16-27 ms):
+
+| Dataset | Benign | Attack |
+|---|---:|---:|
+| NF-UNSW-NB15-v2 | 5.8% | 10.5% |
+| NF-CSE-CIC-IDS2018-v2 | 4.0% | **82.6%** |
+
+No router exports a negative duration, so this is a property of the testbeds' flow exporter, and in
+CSE-CIC it is an almost perfect attack marker. A model that sees the raw value learns it.
+
+**Decision.** `build_features` (the one module training and serving share) maps such values to 0, like any
+other negative duration (`WRAPPED_DURATION_MS`), with a test that training and serving agree. Because a change
+in how a feature is computed changes what a trained model means, model cards now record
+`feature_spec_version` (this change is v2) and the loader refuses an artifact with another version; models
+without the field count as v1. The two earlier models were moved to `ml/models/_superseded/`.
+
+**Effect, same pipeline and seed, test split (766,147 flows, evaluated once):**
+
+| | Before (raw duration) | After (spec v2) |
+|---|---|---|
+| Macro-F1 | 0.712 | 0.690 |
+| DoS/DDoS F1 (recall) | 0.875 (0.779) | 0.729 (0.574) |
+| BruteForce / Botnet / Recon / Exploit / WebAttack F1 | 1.000 / 0.989 / 0.835 / 0.369 / 0.011 | 1.000 / 0.990 / 0.832 / 0.368 / 0.008 |
+| Alert threshold (validation rule unchanged) | 0.82 | 0.81 |
+| At threshold, false alarms overall / UNSW / CSE | 0.46% / 0.26% / 0.78% | 0.92% / 0.27% / 1.97% |
+| At threshold, attack flows flagged overall / UNSW / CSE | 45.0% / 86.4% / 43.5% | 44.3% / 87.4% / 42.7% |
+| Everyday-traffic probe, called Benign | 4 of 8 | 5 of 8 |
+| Trained UNSW, tested CSE: macro-F1 / false alarms / attack recall | 0.065 / 67.8% / 85.2% | 0.053 / 65.0% / 36.8% |
+| Trained CSE, tested UNSW: macro-F1 / false alarms / attack recall | 0.144 / 1.7% / 1.5% | 0.143 / 2.2% / 2.9% |
+
+**Reading it.** The artefact had flattered DoS/DDoS (90% of the attack rows) and the "85% recall" of the UNSW->CSE
+experiment, which falls to 37%. It did **not** cause the transfer failure: CSE->UNSW still finds 2.9% of attacks and
+UNSW->CSE still raises 65% false alarms. The conclusion of ADR-023 stands: detection on a new network is unproven. The
+chosen threshold now sits at the edge of the 2% target (validation 1.99%, CSE test 1.97%), so the false-alarm
+guarantee on a new network is weak.
+
+**Latency correction.** ADR-023 and the first card said 85 ms per 500 flows (above the 50 ms target). Re-measured
+the same way (single thread, median of 30 runs, idle machine) the old model takes 21.1 ms and the new one 21.0-23.3 ms.
+The 85 ms was the machine's state when it was measured, not the model. Both are under the target; only the idle-machine
+condition is recorded, not behaviour under load.
+
+**Data integrity on this machine (read this before trusting any number).** The development laptop has faulty RAM.
+Evidence from one afternoon: a numpy string array with one flipped bit (U+002D read back as U+0020002D) that crashed
+a training run; the 3.2 GB CSE-CIC CSV, hash-verified at download, differed from its zip member by exactly two bytes
+(each a single bit-5 flip, 1,768 bytes apart), and a second extraction reproduced the same pair at other file offsets
+but the same in-page offsets (94 and 1862 of a 4 KB page): one defective physical page that the OS hands to different
+file pages. The zip, the UNSW CSV and the on-disk copy after a fresh extraction were intact. Earlier faults of the
+session (zip CRC mismatches, a corrupted TypeScript compiler file, a 64 PiB allocation, a Node segfault) fit the same
+cause. Measures taken: training now verifies every CSV against the SHA-256 in MANIFEST.json before reading it
+(`verify_sha256`, test included), so the checksum recorded in a model card is a checked claim; the damaged CSV was
+re-extracted until it verified; and **the reported model was trained twice from the same seed, giving a byte-identical
+artifact (SHA-256 `8b78768169bef02e...`) and identical validation, test, per-dataset, cross-dataset and probe results.**
+That repeat is the evidence for the numbers in this ADR, not the first run. The owner should test the memory (Windows
+Memory Diagnostic, or MemTest86 per module; the laptop has a Samsung and a Hynix SODIMM) and replace the faulty one;
+until then any figure that matters should be reproduced the same way.
+
+**Not done.** The cross-dataset gap, the 44% attack-flow recall and the thin false-alarm margin are open problems; the
+levers listed in ADR-023 (richer sensor-mode features, per-network baselines, pilot calibration) are untouched.
+
+---
+
+## ADR-025: ingest throughput, sign-in throttling, backups, log caps and CI
+
+**Method (throughput).** The worker's batch log line now shows milliseconds per stage. Capacity was measured by
+stopping the worker, queueing a backlog through the ingest API, starting the worker(s) and timing the drain (wall
+clock, first batch start to last batch end), so it measures the worker and not the load generator. Two loads, both
+made from real held-out flows: "attack-heavy" is the 4,212-flow demo sample (about 70% attack flows, about 25 alert
+groups per 500-flow batch) and "benign-only" is its 2,000 benign flows repeated. Runs vary by about 15%; one laptop,
+normal desktop load, faulty RAM (ADR-024). This is a backlog-drain capacity figure, not a soak or a real-exporter test.
+
+**Where the time went.** At the start one worker took about 1.0 s per 500-flow batch (about 470 flows/s attack-heavy).
+The model was negligible (features about 20 ms, prediction about 40 ms). Writing flows took 300-600 ms, predictions
+100-200 ms, alert handling 250-450 ms.
+
+**What the flow insert was really doing.** Profiling showed most of the insert time was client-side: SQLAlchemy
+compiling and psycopg parsing one 8,000-placeholder `VALUES` statement per batch (142 of 267 ms per 500 flows), not
+Postgres. Steps measured in isolation, in a rolled-back transaction: inline `VALUES` 267 ms; `executemany` 125 ms
+(and, without `RETURNING`, slower than `VALUES`, because SQLAlchemy only batches with `RETURNING`); `INSERT ... SELECT
+... FROM unnest(column arrays) ON CONFLICT DO NOTHING` **48 ms**. The last is now `app/db/bulk.py`, used for flows and
+predictions. It stores identical values (NULLs inside the arrays, INET, JSONB, microsecond timestamps), skips conflicts
+and reports only inserted rows, which the idempotent redelivery in ADR-004 needs (tests). In the pipeline the flow
+insert dropped from about 270 to 75-95 ms and the prediction insert to 50-60 ms.
+
+**Other changes.** The Redis window counters for all alert groups of a batch share one pipeline (no difference visible
+within the noise; one round trip instead of one per group). The default batch size went from 500 to 2,000: alert work
+is per source and class per batch, not per flow, so bigger batches are cheaper per flow (attack-heavy, one worker:
+786 flows/s at 500, 921 at 1,000, 1,441 at 2,000), and under light load a batch is only what has arrived, so latency
+does not grow. A failed batch is now retried whole once before the per-message fallback, because that fallback costs a
+transaction per message; the Redis counters sit outside the transaction, so a retry can count a batch twice, which can
+only make an alert fire slightly early. `WORKER_REPLICAS` (compose) runs more workers on the same consumer group.
+
+| Backlog drain, 4-core laptop | Benign-only | Attack-heavy |
+|---|---:|---:|
+| Start of this work, 1 worker, batch 500 | not measured | about 470 flows/s |
+| Now, 1 worker | about 1,680 flows/s | about 1,355 flows/s |
+| Now, 2 workers | about 2,370 flows/s | about 2,050 flows/s |
+
+**Tried and rejected.** Merging the advisory lock and the alert lookup into one statement: the statement's snapshot
+could be taken before the lock is granted and miss an alert a concurrent worker just created. Caching which
+recommendations were already stored: about 10% on attack-heavy traffic, but it must only be updated after the
+transaction commits or a rollback would hide a recommendation; not worth the state. **Still open:** alert handling is
+350-460 ms per batch on attack-heavy traffic (four or five sequential statements per group).
+
+**Sign-in throttling.** Failed attempts are counted per account in Redis (8 in 15 minutes, then 429 with
+`Retry-After`; a success resets the count) and checked before the password, so a locked account cannot be guessed at.
+Unknown addresses are counted the same way so the limiter does not reveal which accounts exist. It is deliberately not
+per client address: browsers reach the API through the web container, so one address would be shared by every user and
+anyone could lock everyone out. The price is that a known account can be locked for 15 minutes by someone who fails on
+purpose. Redis errors fail open (logged). Open sign-up is capped at 20 organisations per hour across the deployment,
+and `ENV=prod` logs a warning if `ALLOW_REGISTRATION` is still true. Tested, and exercised against the running stack
+(8 x 401, then 429 even for the right password, another account unaffected, unlock by deleting the key).
+
+**Backups.** `scripts/backup.sh` dumps the database (custom format), reads the dump back before trusting it, copies the
+models and writes a SHA256SUMS file. `scripts/restore.sh` restores into a scratch database by default, with the
+TimescaleDB pre/post-restore calls it needs, and refuses the live database without `FORCE=1`. Checked on a real
+backup: every table's row count matched the live database and both hypertables survived. There is no schedule and no
+off-machine copy; `backups/` holds password hashes and tenant data and is gitignored.
+
+**Logs and CI.** Every long-running container's log is capped at 3 files of 10 MB (the default is unbounded, on a
+disk that is nearly full). `.github/workflows/ci.yml` runs ruff, mypy, the whole pytest suite against real TimescaleDB
+and Redis service containers, the frontend lint, type check and build, and a compose validity check. The Playwright
+specs are not in CI: they need a trained model, which is not committed.
