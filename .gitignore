@@ -38,3 +38,6 @@ ml/models/*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# backups hold password hashes and tenant data
+backups/
