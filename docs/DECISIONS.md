@@ -588,6 +588,14 @@ fallback) is unit-tested with a stand-in library. **Not verified:** the Windows-
 `wpcap.dll` from `System32\Npcap`, Npcap device names, `timeval` layout on Windows) because Npcap was not
 installed on the test machine; macOS is untested too.
 
+**A way for the user to verify it themselves.** `--check` runs the self-test, then one short HTTP request over IPv4
+and one over IPv6 from the machine, and counts the packets of each that the capture saw in each direction. A
+family the machine cannot reach (no route) is reported as "not testable", not as a capture fault; a family that
+worked but was not seen is reported as missing, with the Npcap pointer when the Windows raw socket is the backend.
+Run on Linux with both backends on a dual-stack network it reported IPv4 and IPv6 OK (5 packets each way), and on
+unelevated Windows it refused with a clear message; it has not yet run on Windows with Npcap, which is the one step
+that needs the user (installing the driver and accepting its licence).
+
 **Removing a source.** `DELETE /sources/{id}` (administrators, own organisation only; other organisations get 404).
 The API key stops working at once because it is looked up from the source row. Assets in the source are removed
 (cascade), alerts keep their data and lose the link (`SET NULL`), stored flows are kept as history, and the source's

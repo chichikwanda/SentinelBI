@@ -854,6 +854,117 @@ def test_list_devices_prints_them_or_explains_why_not(
     assert s.main(["--list-devices"]) == 2
 
 
+def _pkt(src: str, dst: str) -> s.Packet:
+    return pkt(src=src, dst=dst, sport=40000, dport=80)
+
+
+def test_a_probe_is_counted_by_direction_whatever_the_ipv6_spelling() -> None:
+    local, remote = "2a00:1:2::5", "2606:4700::1"
+    packets = [
+        _pkt("2A00:0001:0002:0000:0000:0000:0000:0005", remote),  # sent (a different spelling)
+        _pkt(local, remote),
+        _pkt(remote, local),
+        _pkt("10.0.0.5", "1.1.1.1"),  # unrelated traffic is not counted
+    ]
+    assert s.count_probe(packets, local, remote) == (2, 1)
+    assert s.count_probe([], local, remote) == (0, 0)
+
+
+class ScriptedCapture:
+    """A fake live capture: after the self-test it 'sees' whichever families it is told to."""
+
+    def __init__(self, sees: dict[str, bool], sees_ipv6: bool = True) -> None:
+        self.sees, self.sees_ipv6, self.name = sees, sees_ipv6, "scripted capture"
+
+    def __iter__(self) -> Any:
+        yield None  # the capture opens
+        while True:
+            for label, (src, dst) in {
+                "v4": ("10.0.0.5", "93.184.1.1"),
+                "v6": ("2a00:1:2::5", "2606::1"),
+            }.items():
+                if self.sees[label]:
+                    yield (
+                        T0,
+                        kit.ether(kit.ipv4_packet(src, dst, 6, kit.tcp_segment(40000, 80)))
+                        if label == "v4"
+                        else kit.ether(
+                            kit.ipv6_packet(src, dst, 6, kit.tcp_segment(40000, 80)),
+                            ethertype=0x86DD,
+                        ),
+                        "eth",
+                        60,
+                    )
+                    yield (
+                        T0,
+                        kit.ether(kit.ipv4_packet(dst, src, 6, kit.tcp_segment(80, 40000)))
+                        if label == "v4"
+                        else kit.ether(
+                            kit.ipv6_packet(dst, src, 6, kit.tcp_segment(80, 40000)),
+                            ethertype=0x86DD,
+                        ),
+                        "eth",
+                        60,
+                    )
+            yield None
+
+
+def run_check(monkeypatch: pytest.MonkeyPatch, capture: Any) -> int:
+    monkeypatch.setattr(s, "self_test", lambda a: 0)
+    monkeypatch.setattr(s, "open_live", lambda a: capture)
+    endpoints = {
+        socket.AF_INET: ("10.0.0.5", "93.184.1.1"),
+        socket.AF_INET6: ("2a00:1:2::5", "2606::1"),
+    }
+
+    def fake_probe(family: int, result: dict) -> None:
+        result["local"], result["remote"] = endpoints[family]
+        result["ok"] = True
+
+    monkeypatch.setattr(s, "probe_family", fake_probe)
+    return s.main(["--check"])
+
+
+def test_check_reports_a_capture_that_sees_both_families(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_check(monkeypatch, ScriptedCapture({"v4": True, "v6": True})) == 0
+    err = capsys.readouterr().err
+    assert "IPv4: OK" in err and "IPv6: OK" in err and "sees every address family" in err
+
+
+def test_check_tells_a_windows_user_to_install_npcap_when_ipv6_is_invisible(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capture = ScriptedCapture({"v4": True, "v6": False}, sees_ipv6=False)
+    assert run_check(monkeypatch, capture) == 1
+    err = capsys.readouterr().err
+    assert "IPv4: OK" in err and "IPv6: NOT SEEN" in err and "install Npcap" in err
+
+
+def test_check_does_not_blame_the_capture_when_a_family_cannot_be_tested(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(s, "self_test", lambda a: 0)
+    monkeypatch.setattr(s, "open_live", lambda a: ScriptedCapture({"v4": True, "v6": False}))
+
+    def probe(family: int, result: dict) -> None:
+        if family == socket.AF_INET:
+            result.update(local="10.0.0.5", remote="93.184.1.1", ok=True)
+        else:
+            result["error"] = "Network is unreachable"  # a machine with no IPv6 route
+
+    monkeypatch.setattr(s, "probe_family", probe)
+    assert s.main(["--check"]) == 0
+    err = capsys.readouterr().err
+    assert "IPv6: not testable here" in err and "NOT SEEN" not in err
+
+
+def test_check_stops_at_a_failed_self_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(s, "self_test", lambda a: 2)
+    assert s.main(["--check"]) == 2
+
+
 def test_the_sensor_stays_runnable_on_python_3_9() -> None:
     """It runs on whatever Python the monitored machine has. The grammar check catches new syntax;
     the name check catches standard-library names added later (ruff's autofix once swapped

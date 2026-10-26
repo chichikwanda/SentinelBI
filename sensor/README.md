@@ -68,6 +68,14 @@ The sensor captures one of two ways, and says which at start-up.
 description (Windows device names are long GUIDs, the description is easier). `--promiscuous` also sees
 packets not addressed to this machine, for a gateway or mirror port.
 
+**`--check`** is the one command to run after installing Npcap, or whenever volumes look too low. It runs the
+self-test, then makes one short web request over IPv4 and one over IPv6 from this machine and counts how many
+of those packets the capture saw in each direction. It prints one verdict per family (`OK`, `NOT SEEN` with the
+likely cause, or `not testable here` when the machine has no route for that family, which is not a capture
+fault) and exits 0 only when every family it could test was seen. It needs the same rights as live capture
+(an Administrator PowerShell on Windows, `sudo` on Linux) and about 15 seconds. The requests go to
+`example.com` on port 80 and nothing is sent to SentinelBI.
+
 ## Which address to give it
 
 Use the address your traffic really leaves from. A machine often has several: on Windows, `ipconfig` also
@@ -97,8 +105,9 @@ units (1 kB = 1000 bytes).
 | Speed | About 177,000 packets per second per core for parsing, filtering and flow building (offline replay on a laptop; live capture adds a system call per packet) |
 | Windows live capture, IPv4 | Tested on the author's laptop from an elevated terminal: the self-test passed, an IPv4-only request showed 9 packets out and 9 in, and a live run reported 141 packets as 14 flows to the real API. ICMP byte counts were exact (4 pings and 4 replies at 60 bytes = 480 B) and the HTTP totals were consistent with the transfer |
 | libpcap backend, Linux | The ctypes wrapper against real libpcap, capturing IPv4 and IPv6 transfers: byte-identical flows to the native backend, and within 0.021% (transmit) and 0.006% (receive) of the kernel's interface counters |
-| **Windows live capture, IPv6 through Npcap** | **Not yet tested**: Npcap was not installed on the machine used for testing. The Windows-specific parts (loading the DLL from `System32\Npcap`, the device names) are exercised only by unit tests with a stand-in library. Run `--list-devices` and `--self-test --backend pcap` after installing Npcap |
+| **Windows live capture, IPv6 through Npcap** | **Not yet tested**: Npcap was not installed on the machine used for testing. The Windows-specific parts (loading the DLL from `System32\Npcap`, the device names) are exercised only by unit tests with a stand-in library. Run `--list-devices` and then `--check` after installing Npcap |
 | Windows IPv6 through the raw-socket fallback | **Not captured** (measured: Windows delivers the TCP header first, with no IPv6 header, and a TCP-specific IPv6 raw socket cannot be opened). The sensor prints a note at start-up when the machine has IPv6 |
+| `--check` | Run for real on Linux with both backends on a dual-stack network (IPv4 OK, IPv6 OK, exit 0) and on unelevated Windows (refuses clearly, exit 2). Not yet run on Windows with Npcap |
 | macOS | libpcap is built in and the backend is selected, but it is untested |
 
 ## Limits

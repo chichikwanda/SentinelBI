@@ -90,6 +90,9 @@ only, never contents.
    with your API key and address filled in. Run the
    `--self-test` line first: it proves capture works on that machine. Run the last line to start reporting.
    Windows needs an **Administrator** PowerShell; Linux needs `sudo`. Python 3.9 or newer, nothing to install.
+   After installing Npcap, run `python sentinelbi_sensor.py --list-devices` (it should list your adapter) and then
+   `python sentinelbi_sensor.py --check`: it makes one request over IPv4 and one over IPv6 and tells you whether
+   the capture saw each. Exit code 0 means every family it could test was seen.
 3. Within seconds the wizard says "First flows received". Open **Traffic** to see how much that host sent and
    received, who it talked to and which services it used. **Reports** has the per-host CSV and the PDF.
 

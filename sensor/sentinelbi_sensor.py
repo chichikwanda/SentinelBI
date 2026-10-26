@@ -1028,6 +1028,96 @@ def privilege_hint() -> str:
     return "live capture needs root (sudo) or the NET_RAW capability (docker run --cap-add=NET_RAW)"
 
 
+def probe_family(family: int, result: Dict[str, Any]) -> None:
+    """One short HTTP request over the given address family; records the two endpoints it used."""
+    try:
+        info = socket.getaddrinfo("example.com", 80, family, socket.SOCK_STREAM)[0]
+        with socket.socket(family, socket.SOCK_STREAM) as conn:
+            conn.settimeout(10)
+            conn.connect(info[4])
+            result["local"] = norm_ip(str(conn.getsockname()[0]))
+            result["remote"] = norm_ip(str(info[4][0]))
+            conn.sendall(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+            while conn.recv(65536):
+                pass
+        result["ok"] = True
+    except OSError as exc:
+        result["error"] = str(exc)
+
+
+def count_probe(packets: List[Packet], local: str, remote: str) -> Tuple[int, int]:
+    """(packets this machine sent to the server, packets it received from it)."""
+    out = sum(1 for p in packets if norm_ip(p.src) == local and norm_ip(p.dst) == remote)
+    back = sum(1 for p in packets if norm_ip(p.src) == remote and norm_ip(p.dst) == local)
+    return out, back
+
+
+def check_capture(args: argparse.Namespace) -> int:
+    """The self-test, then a look at both address families: which of this machine's own requests the
+    capture really sees, in which direction. Run it after installing Npcap, or when volumes look low."""
+    code = self_test(args)
+    if code != 0:
+        return code
+    try:
+        source = open_live(args)
+        stream = iter(source)
+        next(stream)
+    except (OSError, SystemExit) as exc:
+        log(f"cannot open the capture: {exc}")
+        return 2
+    log(f"checking what {getattr(source, 'name', 'this capture')} can see (about 15 seconds) ...")
+    seen_everywhere = True
+    verdicts: List[str] = []
+    try:
+        for label, family in (("IPv4", socket.AF_INET), ("IPv6", socket.AF_INET6)):
+            result: Dict[str, Any] = {}
+            worker = threading.Thread(target=probe_family, args=(family, result), daemon=True)
+            worker.start()
+            packets: List[Packet] = []
+            end = time.time() + 12
+            while time.time() < end:
+                raw = next(stream)
+                if raw is not None:
+                    pkt = parse_raw(raw)
+                    if pkt is not None:
+                        packets.append(pkt)
+                if not worker.is_alive() and time.time() > end - 11:
+                    break
+            if not result.get("ok"):
+                verdicts.append(
+                    f"{label}: not testable here ({result.get('error', 'no answer')}); "
+                    "this machine may have no route for it"
+                )
+                continue
+            out, back = count_probe(packets, result["local"], result["remote"])
+            if out and back:
+                verdicts.append(f"{label}: OK, saw {out} packets sent and {back} received")
+            else:
+                seen_everywhere = False
+                why = (
+                    f"{label}: NOT SEEN ({out} sent, {back} received) although the request worked."
+                )
+                if label == "IPv6" and not getattr(source, "sees_ipv6", True):
+                    why += (
+                        f" This capture (the Windows raw socket) cannot read IPv6: install Npcap from "
+                        f"{NPCAP_URL} and run --check again."
+                    )
+                verdicts.append(why)
+    finally:
+        getattr(stream, "close", lambda: None)()
+    for line in verdicts:
+        log(line)
+    log(
+        "RESULT: "
+        + (
+            "capture sees every address family it could test"
+            if seen_everywhere
+            else "capture is missing traffic, see above"
+        )
+    )
+    return 0 if seen_everywhere else 1
+
+
 def self_test(args: argparse.Namespace) -> int:
     """Send one datagram to a documentation address and check the capture sees it leave."""
     target = "192.0.2.1"  # TEST-NET-1: never routed to a real host
@@ -1135,6 +1225,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="check that capture works on this machine, then exit",
     )
     p.add_argument(
+        "--check",
+        action="store_true",
+        help="self-test, then make one request over IPv4 and one over IPv6 and say which this capture sees",
+    )
+    p.add_argument(
         "--idle-timeout",
         type=float,
         default=15.0,
@@ -1170,6 +1265,8 @@ def run(args: argparse.Namespace) -> int:
         return list_devices(args)
     if args.self_test:
         return self_test(args)
+    if args.check:
+        return check_capture(args)
     remap: Dict[str, str] = {}
     for pair in args.map_ip or []:
         old, _, new = pair.partition("=")
