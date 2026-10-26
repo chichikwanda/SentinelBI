@@ -24,6 +24,8 @@ export interface Source {
   id: string;
   name: string;
   cidr: string;
+  /** Other addresses of the same machine, reported by its sensor (the IPv6 ones). */
+  extra_cidrs?: string[];
   method: SourceMethod;
   status: string;
   criticality: number;

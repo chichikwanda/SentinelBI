@@ -85,6 +85,32 @@ test("enter an IP at registration, run the sensor, see how much data it moved", 
   expect(Number(total)).toBe(Number(sent) + Number(received));
   const pdf = await page.request.get("/api/proxy/reports/summary.pdf");
   expect(pdf.status()).toBe(200);
+
+  // 9. the machine also has IPv6 addresses: the sensor tells the server (with the same API key),
+  //    and they count as the same monitored machine
+  const v6 = "2001:db8:aa::5";
+  const told = await page.request.put(`${API}/api/v1/sensor/addresses`, {
+    headers: { "X-API-Key": apiKey },
+    data: { addresses: [v6] },
+  });
+  expect(told.status()).toBe(200);
+  const ingested = await page.request.post(`${API}/api/v1/ingest/flows`, {
+    headers: { "X-API-Key": apiKey },
+    data: {
+      flows: [
+        {
+          src_ip: v6, dst_ip: "2606:2800::1", protocol: 6, src_port: 51000, dst_port: 443,
+          in_bytes: 2000, out_bytes: 90000, in_pkts: 10, out_pkts: 70, duration_ms: 400,
+        },
+      ],
+    },
+  });
+  expect(ingested.status()).toBe(202);
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("extra-addresses")).toContainText(/\+ 1 more address of this machine/);
+  await page.goto("/traffic");
+  await expect(page.getByTestId("host-row")).toHaveCount(2, { timeout: 60_000 });
+  await expect(page.getByTestId("host-row").filter({ hasText: v6 })).toHaveCount(1);
 });
 
 test("a new organisation without a source is offered the quick start", async ({ page }) => {

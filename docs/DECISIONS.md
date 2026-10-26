@@ -586,15 +586,17 @@ and address discovery worked, the self-test passed, the libpcap backend and the 
 kernel's interface counters. Pure logic (address parsing, link layers, device choice, backend selection and
 fallback) is unit-tested with a stand-in library. **Not verified:** the Windows-specific part (loading
 `wpcap.dll` from `System32\Npcap`, Npcap device names, `timeval` layout on Windows) because Npcap was not
-installed on the test machine; macOS is untested too.
+installed on the test machine; macOS is untested too. (Update: verified on a Windows laptop once Npcap was
+installed, see ADR-028.)
 
 **A way for the user to verify it themselves.** `--check` runs the self-test, then one short HTTP request over IPv4
 and one over IPv6 from the machine, and counts the packets of each that the capture saw in each direction. A
 family the machine cannot reach (no route) is reported as "not testable", not as a capture fault; a family that
 worked but was not seen is reported as missing, with the Npcap pointer when the Windows raw socket is the backend.
 Run on Linux with both backends on a dual-stack network it reported IPv4 and IPv6 OK (5 packets each way), and on
-unelevated Windows it refused with a clear message; it has not yet run on Windows with Npcap, which is the one step
-that needs the user (installing the driver and accepting its licence).
+unelevated Windows it refused with a clear message; it had not yet run on Windows with Npcap, the one step
+that needed the user (installing the driver and accepting its licence). (Update: it has since passed there; see
+ADR-028, which also records a bug in the check that only Windows could show.)
 
 **Removing a source.** `DELETE /sources/{id}` (administrators, own organisation only; other organisations get 404).
 The API key stops working at once because it is looked up from the source row. Assets in the source are removed
@@ -616,3 +618,57 @@ because replaying the same file on purpose (demos, load tests) must keep working
 status lines, so I briefly tested old containers and saw "no deduplication"; checking the container's code and the
 build log found it. The lesson applied here: after a rebuild, confirm the running container has the change before
 trusting a live test.
+
+---
+
+## ADR-028: a machine is more than one address, and what the first Windows run found
+
+**Why.** The first run of ADR-027's Windows capture, on the author's own dual-stack laptop, found two problems
+that unit tests and Linux containers could not.
+
+**Finding 1: one address left almost everything out.** Given only the IPv4 address, the sensor kept only packets
+with that address at one end. The laptop's IPv6 traffic comes from different addresses, so it was discarded: in
+a live run the IPv4 address showed about 4 kB while the machine moved 27 MB, 99.99% of it over IPv6. The server
+had the same blind spot, because a host counts as monitored only when a registered source's range contains it.
+
+| Option | Verdict |
+|---|---|
+| Ask the user to also type the IPv6 prefix (a second source) | Rejected: it defeats "just give me an IP", leaves an unused source forever `pending`, and a `/64` also covers other machines |
+| Give a source several ranges in its own column | Rejected for now: a larger change to the register form and API for no benefit over the chosen option |
+| **The sensor finds the adapter's other addresses and reports them with its own API key** | **Chosen** |
+
+How it works. Given a single address that belongs to the capture adapter, the sensor lists the adapter's other
+addresses through libpcap (skipping loopback, link-local and multicast), watches them, rescans every minute
+(IPv6 privacy addresses rotate), and calls `PUT /api/v1/sensor/addresses`. The server stores them in
+`sources.extra_cidrs` (migration 0003, a `cidr[]` column, default empty), keeps the newest 64, and the
+"monitored host" test is now `ip <<= cidr OR ip <<= ANY(extra_cidrs)`. Safety: the call is authenticated by the
+source's own key, works only for sensor sources (409 otherwise), changes only that source, and a key holder can
+only add addresses to their own organisation's view, which they could already see. Each address is its own row on
+the Traffic page; merging them into one machine is a possible later improvement. Where the capture cannot list
+addresses (the Linux packet socket, the Windows raw socket) the sensor says so and names the options
+(`--ip` with the prefix, or `--backend pcap`).
+
+**Finding 2: `--check` was wrong, not the capture.** It reported IPv6 as NOT SEEN although the request worked.
+Counting the probe's packets directly showed 5 sent and 5 received. Npcap hands packets over in batches of up to
+500 ms, the IPv6 request finished in well under a second, and the check stopped listening a second after the
+request began, so the packets had not arrived. Linux delivers immediately, which is why the same code passed
+there. It now listens 2 seconds after the request ends; a test reproduces late batches and fails without the fix.
+
+**Verification (Windows 11, Intel AC 7260 Wi-Fi, Npcap 1.90, Python 3.13, unelevated).** The device list found the
+adapter with its IPv4 address and three global IPv6 addresses; `--check` passed three runs in a row; a 75-second live run into the real stack
+(throwaway organisation) reported 27.0 MB. Known traffic was exact: 5 IPv4 pings to 1.1.1.1 came out as 600 bytes
+and 5 IPv6 pings as 800. The sensor's total plus 14 bytes of Ethernet header per packet was within 0.11% of
+`Get-NetAdapterStatistics` for the adapter (the difference includes local-network chatter that is correctly
+ignored). The server listed the three IPv6 addresses on the source, and the Traffic page showed the IPv6 host.
+Npcap worked without Administrator rights because its default install allows it.
+
+**Not verified.** One laptop, one adapter type, Windows 11; Windows 10, Ethernet, VPN adapters, several
+simultaneous adapters and macOS are untested. A sibling IPv4 address on the same adapter is also added, which is
+right for a second address of one machine but would be wrong on a shared bridge. Detection quality on real traffic
+is unchanged and still unproven (ADR-023/024).
+
+**Found while deploying it.** `docker compose build api worker` followed by `up -d` left the live database at
+migration 0002: the one-shot `migrate` service is not re-run by `up`. The API started and answered, but
+`alembic_version` still said 0002, so the new column did not exist (I did not call the new endpoint in that state).
+Checking `alembic_version` after a deployment caught it; startup.md now says to run the full
+`docker compose up -d --build --wait` or `docker compose run --rm migrate`.

@@ -43,11 +43,44 @@ class SourceOut(BaseModel):
     id: uuid.UUID
     name: str
     cidr: IpStr
+    extra_cidrs: list[IpStr] = Field(default_factory=list)
     method: SourceMethod
     status: str
     criticality: int
     last_seen: datetime | None
     created_at: datetime
+
+
+MAX_ANNOUNCED_ADDRESSES = 32  # per request
+MAX_EXTRA_CIDRS = 64  # kept per source, newest last (IPv6 privacy addresses rotate daily)
+
+
+class SourceAddresses(BaseModel):
+    cidr: str
+    addresses: list[str]
+
+
+class SensorAddresses(BaseModel):
+    """The other addresses of the machine a sensor runs on (see ``Source.extra_cidrs``)."""
+
+    addresses: list[str] = Field(max_length=MAX_ANNOUNCED_ADDRESSES)
+
+    @field_validator("addresses")
+    @classmethod
+    def _single_public_addresses(cls, values: list[str]) -> list[str]:
+        out: list[str] = []
+        for raw in values:
+            try:
+                ip = ipaddress.ip_address(
+                    raw.strip().split("%", 1)[0]
+                )  # drop a zone id (fe80::1%12)
+            except ValueError as exc:
+                raise ValueError(f"{raw!r} is not an IP address") from exc
+            if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+                raise ValueError(f"{ip} is not an address of a host on a network")
+            if str(ip) not in out:
+                out.append(str(ip))
+        return out
 
 
 class SnippetOut(BaseModel):

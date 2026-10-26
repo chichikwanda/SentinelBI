@@ -76,6 +76,23 @@ fault) and exits 0 only when every family it could test was seen. It needs the s
 (an Administrator PowerShell on Windows, `sudo` on Linux) and about 15 seconds. The requests go to
 `example.com` on port 80 and nothing is sent to SentinelBI.
 
+**One address is enough for the whole machine.** A dual-stack machine is several addresses: the IPv4 address you
+type, plus IPv6 addresses on the same adapter, several of them temporary ones that change daily. When you give a
+single address and the capture is libpcap/Npcap, the sensor looks up the other addresses of that adapter
+(loopback, link-local and multicast ones are skipped), watches them too, checks again every minute, and tells the
+server through `PUT /api/v1/sensor/addresses` (authenticated with the same API key) so the Traffic page counts
+them as the same monitored machine. Each shows as its own row there. The server keeps the newest 64 per source.
+On the laptop this was built on, nearly all traffic was IPv6: the IPv4 address alone showed about 4 kB where the
+machine had moved 27 MB. With a capture that cannot list addresses (the Linux packet socket, the Windows raw
+socket) the sensor says so and you give the IPv6 address or prefix yourself, for example
+`--ip 192.168.1.20 --ip 2001:db8:1::/64`, or use `--backend pcap`. A range (`--ip 10.0.0.0/24`) is never
+extended, and `--dry-run` shows what would be watched without telling the server. An older server answers 404
+to the announcement: the sensor says so and still captures, but only registered addresses count as monitored.
+
+Npcap's default install lets any user capture, and the sensor worked without Administrator rights on the
+laptop it was tested on. If you ticked "Restrict Npcap driver's access to Administrators only" while installing,
+use an Administrator terminal.
+
 ## Which address to give it
 
 Use the address your traffic really leaves from. A machine often has several: on Windows, `ipconfig` also
@@ -105,9 +122,10 @@ units (1 kB = 1000 bytes).
 | Speed | About 177,000 packets per second per core for parsing, filtering and flow building (offline replay on a laptop; live capture adds a system call per packet) |
 | Windows live capture, IPv4 | Tested on the author's laptop from an elevated terminal: the self-test passed, an IPv4-only request showed 9 packets out and 9 in, and a live run reported 141 packets as 14 flows to the real API. ICMP byte counts were exact (4 pings and 4 replies at 60 bytes = 480 B) and the HTTP totals were consistent with the transfer |
 | libpcap backend, Linux | The ctypes wrapper against real libpcap, capturing IPv4 and IPv6 transfers: byte-identical flows to the native backend, and within 0.021% (transmit) and 0.006% (receive) of the kernel's interface counters |
-| **Windows live capture, IPv6 through Npcap** | **Not yet tested**: Npcap was not installed on the machine used for testing. The Windows-specific parts (loading the DLL from `System32\Npcap`, the device names) are exercised only by unit tests with a stand-in library. Run `--list-devices` and then `--check` after installing Npcap |
+| Windows live capture through Npcap 1.90, IPv4 and IPv6 | Tested on the author's laptop (Wi-Fi, dual-stack, Python 3.13) against the real stack, **without Administrator rights** (Npcap's default install). The device list found the adapter with its IPv4 and three IPv6 addresses; the self-test passed; `--check` passed three runs in a row for both families. A 75-second live run reported 27 MB: 5 pings over IPv4 to 1.1.1.1 came out as exactly 600 bytes and 5 over IPv6 as exactly 800, and the total plus 14 bytes of Ethernet header per packet was within 0.11% of Windows' own adapter counters (`Get-NetAdapterStatistics`; the difference includes local-network chatter the sensor correctly ignores). 99.99% of that traffic was IPv6. Windows 11 only; Windows 10 and other adapters are untested |
 | Windows IPv6 through the raw-socket fallback | **Not captured** (measured: Windows delivers the TCP header first, with no IPv6 header, and a TCP-specific IPv6 raw socket cannot be opened). The sensor prints a note at start-up when the machine has IPv6 |
-| `--check` | Run for real on Linux with both backends on a dual-stack network (IPv4 OK, IPv6 OK, exit 0) and on unelevated Windows (refuses clearly, exit 2). Not yet run on Windows with Npcap |
+| `--check` | Linux with both backends on a dual-stack network (IPv4 OK, IPv6 OK, exit 0); Windows without Npcap (reports a clear refusal or IPv4 only); Windows with Npcap (passes). It first reported IPv6 as NOT SEEN on Windows because Npcap hands packets over in batches up to half a second late and the check stopped listening a second after the request began; it now listens 2 seconds after the request ends, and a test reproduces the late delivery |
+| One address covering the whole machine | Unit tests (address discovery, the matcher's cache, the announcement and its retries, a full run with a fake adapter), 9 backend tests (authorisation, limits, isolation between organisations, the Traffic page counting an announced address byte for byte), and the live Windows run above, where the server listed the adapter's three IPv6 addresses and the Traffic page showed the IPv6 host |
 | macOS | libpcap is built in and the backend is selected, but it is untested |
 
 ## Limits

@@ -188,9 +188,9 @@ of attack flows go unflagged at the calibrated threshold; the Random Forest cann
 alerts; ingest capacity was measured by draining a queued backlog on one laptop, not by a long soak or a
 load test from real exporters; the CIS Controls and NIST CSF titles are unverified (the ATT&CK ones are
 checked against the official data); no real-router NetFlow test has been run; the sensor's live capture was verified on Linux (byte counts matched the kernel's own counters, IPv4 and
-IPv6, with both capture backends) and on Windows for IPv4 through its raw-socket fallback; the Windows
-Npcap path, which adds IPv6, is untested because Npcap is a driver the user installs and its licence forbids
-bundling it, and macOS is untested; the UI polls every 3 s (no
+IPv6, with both capture backends) and on one Windows 11 laptop through Npcap (IPv4 and IPv6, totals within
+0.11% of the adapter's own counters; Npcap is a driver the user installs and its licence forbids bundling
+it); Windows without Npcap sees IPv4 only, other Windows versions and macOS are untested; the UI polls every 3 s (no
 SSE); sign-in throttling is per account only, and a known account can be locked for 15 minutes by
 someone who fails on purpose; open registration is on by default (set `ALLOW_REGISTRATION=false` for a
 public deployment); the Playwright specs need a trained model and are not run in CI; there is no

@@ -38,7 +38,18 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Iterator, List, NamedTuple, Optional, Set, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Set,
+    Tuple,
+)
 
 VERSION = "0.1.0"
 
@@ -149,6 +160,14 @@ class Matcher:
             return any(addr in net for net in self.networks if net.version == addr.version)
 
         self._inside = inside
+
+    def add_networks(self, networks: Iterable[str]) -> None:
+        """Start watching more addresses. Only the capture loop calls this (never another thread)."""
+        for text in networks:
+            net = ipaddress.ip_network(text.strip(), strict=False)
+            if net not in self.networks:
+                self.networks.append(net)
+        self._inside.cache_clear()  # answers cached before the change may be wrong now
 
     def wanted(self, p: Packet) -> bool:
         if (p.src, p.sport) in self.excluded or (p.dst, p.dport) in self.excluded:
@@ -732,6 +751,13 @@ class PcapCapture:
         self.drops = 0
         self.name = f"libpcap/Npcap on {device} (IPv4 and IPv6)"
 
+    def local_addresses(self) -> List[str]:
+        """The addresses the capture device has right now (IPv6 privacy addresses change over time)."""
+        for name, _, addresses in self.lib.devices():
+            if name == self.device:
+                return list(addresses)
+        return []
+
     def _count_drops(self) -> None:
         self.drops = self.lib.drops(self.handle)  # cumulative in libpcap, not reset when read
 
@@ -776,6 +802,7 @@ class Exporter:
         self.key, self.batch = api_key, batch
         self.pending: collections.deque = collections.deque(maxlen=max_pending)
         self.sent = self.dropped = self.duplicates = 0
+        self.addresses_url = self.url.rsplit("/ingest/flows", 1)[0] + "/sensor/addresses"
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="exporter", daemon=True)
@@ -833,6 +860,60 @@ class Exporter:
         except (urllib.error.URLError, OSError) as exc:
             log(f"cannot reach {self.url}: {getattr(exc, 'reason', exc)}; will retry")
             return False
+
+    def announce(self, addresses: List[str]) -> None:
+        """Tell the server which other addresses belong to this machine, so its traffic views count them
+        as the same monitored host. Runs in its own thread: capture is never held up by the network."""
+        for start in range(0, len(addresses), 32):  # the server takes 32 per request
+            chunk = list(addresses[start : start + 32])
+            threading.Thread(
+                target=self._announce, args=(chunk,), name="announce", daemon=True
+            ).start()
+
+    def _announce(self, addresses: List[str]) -> bool:
+        req = urllib.request.Request(  # noqa: S310 - the scheme is checked in __init__
+            self.addresses_url,
+            data=json.dumps({"addresses": addresses}).encode(),
+            method="PUT",
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": self.key,
+                "User-Agent": f"sentinelbi-sensor/{VERSION}",
+            },
+        )
+        delay = 2.0
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(req, timeout=10):  # noqa: S310 - same URL, scheme checked
+                    return True
+            except urllib.error.HTTPError as exc:
+                if exc.code in (404, 405):
+                    log(
+                        "this server is older and does not take a machine's other addresses: their "
+                        "traffic is captured, but only addresses you register count as monitored hosts"
+                    )
+                elif exc.code in (401, 403):
+                    log(f"the server rejected the API key (HTTP {exc.code}); check --api-key")
+                elif exc.code in (409, 422):
+                    log(
+                        f"the server did not accept this machine's other addresses (HTTP {exc.code}); "
+                        "their traffic is captured but may not be listed as monitored"
+                    )
+                else:
+                    if attempt < 3 and not self._stop.wait(delay):
+                        delay *= 2
+                        continue
+                    log(
+                        f"could not tell the server about this machine's other addresses (HTTP {exc.code})"
+                    )
+                return False
+            except (urllib.error.URLError, OSError):
+                if attempt < 3 and not self._stop.wait(delay):
+                    delay *= 2
+                    continue
+                log("could not reach the server to tell it about this machine's other addresses")
+                return False
+        return False
 
     def flush_once(self) -> bool:
         with self._lock:
@@ -987,6 +1068,84 @@ def has_global_ipv6() -> bool:
     except OSError:
         return False
     return any(not str(i[4][0]).lower().startswith(("fe80", "::1")) for i in infos)
+
+
+def sibling_addresses(device_addresses: Iterable[str], watched: Iterable[str]) -> List[str]:
+    """The other addresses of the adapter that owns a watched single address.
+
+    A machine watched by one address (the IPv4 address a person types) normally has more on the same
+    adapter: IPv6 addresses, several of which change every day. Their traffic is the same machine's, so it
+    is counted too. A watched network (a whole range) or an address that is not on this adapter adds
+    nothing; loopback, link-local and multicast addresses are never added."""
+    networks = []
+    for item in watched:
+        try:
+            networks.append(ipaddress.ip_network(item.strip(), strict=False))
+        except ValueError:
+            continue
+    addresses = []
+    for text in device_addresses:
+        try:
+            addresses.append(ipaddress.ip_address(norm_ip(text)))
+        except ValueError:
+            continue
+    single = [n for n in networks if n.num_addresses == 1]
+    if not any(ip in n for n in single for ip in addresses if ip.version == n.version):
+        return []
+    found: List[str] = []
+    for ip in addresses:
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+            continue
+        if any(ip in n for n in networks if n.version == ip.version) or str(ip) in found:
+            continue
+        found.append(str(ip))
+    return found
+
+
+class AddressWatcher:
+    """Keeps looking, in the background, for new addresses on the adapter being captured (IPv6 privacy
+    addresses rotate daily). The capture loop collects them with ``take`` and applies them itself."""
+
+    def __init__(
+        self, source: Any, watched: Callable[[], List[str]], interval: float = 60.0
+    ) -> None:
+        self._finder = getattr(source, "local_addresses", None)
+        self._watched, self.interval = watched, interval
+        self._known: Set[str] = set()
+        self._fresh: List[str] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+    @property
+    def available(self) -> bool:
+        return self._finder is not None
+
+    def scan(self) -> None:
+        if self._finder is None:
+            return
+        try:
+            found = sibling_addresses(self._finder(), self._watched())
+        except (OSError, ValueError):
+            return  # a failed look changes nothing; the next one tries again
+        with self._lock:
+            new = [a for a in found if a not in self._known]
+            self._known.update(new)
+            self._fresh.extend(new)
+
+    def take(self) -> List[str]:
+        with self._lock:
+            fresh, self._fresh = self._fresh, []
+        return fresh
+
+    def start(self) -> None:
+        def loop() -> None:
+            while not self._stop.wait(self.interval):
+                self.scan()
+
+        threading.Thread(target=loop, name="addresses", daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 def ipv6_notice(sees_ipv6: bool = True) -> Optional[str]:
@@ -1317,6 +1476,19 @@ def run(args: argparse.Namespace) -> int:
         log(f"cannot start capture: {exc} ({privilege_hint()})")
         return 2
 
+    watcher = AddressWatcher(source, lambda: [str(n) for n in matcher.networks])
+
+    def adopt(addresses: List[str]) -> None:
+        if not addresses:
+            return
+        matcher.add_networks(addresses)
+        shown = ", ".join(addresses[:4]) + (
+            f" and {len(addresses) - 4} more" if len(addresses) > 4 else ""
+        )
+        log(f"also watching the other addresses of this adapter: {shown}")
+        if exporter:
+            exporter.announce(addresses)
+
     if exporter:
         exporter.start()
     stop = threading.Event()
@@ -1334,6 +1506,20 @@ def run(args: argparse.Namespace) -> int:
         notice = ipv6_notice(getattr(source, "sees_ipv6", True))
         if notice:
             log(f"NOTE: {notice}")
+        if watcher.available:
+            watcher.scan()
+            adopt(watcher.take())
+            watcher.start()
+        elif (
+            getattr(source, "sees_ipv6", True)
+            and has_global_ipv6()
+            and any(n.version == 4 and n.num_addresses == 1 for n in matcher.networks)
+        ):
+            log(
+                "NOTE: this machine also has IPv6 addresses. Traffic over them is counted only if you "
+                "also give them with --ip (for example --ip 2001:db8:1::/64), or capture with "
+                "--backend pcap, which finds them itself."
+            )
 
     counts = {"seen": 0, "kept": 0, "flows": 0}
     started_at = time.time()
@@ -1372,6 +1558,7 @@ def run(args: argparse.Namespace) -> int:
             if clock - last_expire >= 1.0:
                 last_expire = clock
                 emit(table.expire(clock))
+                adopt(watcher.take())  # new addresses found on the adapter
             if not offline and not diagnosed and time.time() - started_at >= 10.0:
                 diagnosed = (
                     True  # once: say why nothing is being reported, instead of staying silent
@@ -1405,6 +1592,7 @@ def run(args: argparse.Namespace) -> int:
         log(f"capture stopped: {exc}")
         return 1
     finally:
+        watcher.stop()
         emit(table.expire(clock or time.time(), force=True))
         if exporter:
             exporter.close()

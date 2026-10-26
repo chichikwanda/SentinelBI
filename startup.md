@@ -28,6 +28,11 @@ The first build takes several minutes on a slow link. `--wait` returns when ever
 healthy. With the images already built, `docker compose down` took 13 s and starting again took about
 1.5 minutes.
 
+After pulling new code, run the same `docker compose up -d --build --wait` again: it rebuilds what changed and
+re-runs the one-shot `migrate` step, which applies database changes. If you rebuild only `api` or `worker`
+(`docker compose build api worker`) the database is **not** migrated; run `docker compose run --rm migrate`
+(for example, the sensor announcing a machine's IPv6 addresses needs migration 0003).
+
 | What | Where |
 |---|---|
 | Web UI | http://127.0.0.1:3000 |
@@ -90,6 +95,8 @@ only, never contents.
    with your API key and address filled in. Run the
    `--self-test` line first: it proves capture works on that machine. Run the last line to start reporting.
    Windows needs an **Administrator** PowerShell; Linux needs `sudo`. Python 3.9 or newer, nothing to install.
+   You give one address; with Npcap the sensor also finds the other addresses of that adapter (the IPv6 ones),
+   watches them and tells the server, so the Traffic page counts the whole machine. Each address is its own row.
    After installing Npcap, run `python sentinelbi_sensor.py --list-devices` (it should list your adapter) and then
    `python sentinelbi_sensor.py --check`: it makes one request over IPv4 and one over IPv6 and tells you whether
    the capture saw each. Exit code 0 means every family it could test was seen.

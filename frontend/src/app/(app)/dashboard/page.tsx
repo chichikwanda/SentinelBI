@@ -136,7 +136,19 @@ function SourceRow({
   return (
     <tr>
       <Td className="font-medium">{source.name}</Td>
-      <Td className="font-mono text-xs">{source.cidr}</Td>
+      <Td className="font-mono text-xs">
+        {source.cidr}
+        {source.extra_cidrs && source.extra_cidrs.length > 0 && (
+          <div
+            className="font-sans text-black/55 dark:text-white/55"
+            title={source.extra_cidrs.join("\n")}
+            data-testid="extra-addresses"
+          >
+            + {source.extra_cidrs.length} more {source.extra_cidrs.length === 1 ? "address" : "addresses"} of
+            this machine
+          </div>
+        )}
+      </Td>
       <Td>{source.method}</Td>
       <Td>
         <HealthPill health={health} />

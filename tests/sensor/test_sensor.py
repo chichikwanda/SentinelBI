@@ -479,6 +479,8 @@ class Receiver:
                 self.end_headers()
                 self.wfile.write(json.dumps(outer.reply).encode())
 
+            do_PUT = do_POST  # the address announcement is a PUT
+
             def log_message(self, *args: Any) -> None:
                 pass
 
@@ -985,6 +987,227 @@ def test_check_keeps_listening_after_a_quick_request_for_packets_that_arrive_in_
 def test_check_stops_at_a_failed_self_test(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s, "self_test", lambda a: 2)
     assert s.main(["--check"]) == 2
+
+
+# ------------------------------------------------------ the other addresses of the watched machine
+ADAPTER = [
+    "10.20.0.5",
+    "fe80::1234:5678:9abc:def0%12",  # link-local: never added
+    "2001:db8:aa:1:3d2e:9f4b:70c1:5a6e",
+    "2001:DB8:AA:1::1DA",  # a different spelling of a global address
+    "169.254.7.7",  # link-local
+    "::1",
+]
+
+
+def test_the_other_addresses_of_the_adapter_that_owns_a_watched_address_are_found() -> None:
+    assert s.sibling_addresses(ADAPTER, ["10.20.0.5"]) == [
+        "2001:db8:aa:1:3d2e:9f4b:70c1:5a6e",
+        "2001:db8:aa:1::1da",
+    ]
+
+
+def test_nothing_is_added_unless_a_single_address_of_this_adapter_was_asked_for() -> None:
+    assert s.sibling_addresses(ADAPTER, []) == []  # no --ip: everything is watched anyway
+    assert s.sibling_addresses(ADAPTER, ["10.20.0.0/24"]) == []  # a range is not "this machine"
+    assert s.sibling_addresses(ADAPTER, ["192.0.2.9"]) == []  # that address is on another adapter
+    assert s.sibling_addresses(ADAPTER, ["not an address"]) == []
+
+
+def test_addresses_that_are_already_watched_are_not_added_again() -> None:
+    assert s.sibling_addresses(ADAPTER, ["10.20.0.5", "2001:db8:aa:1::/64"]) == []
+    one_left = s.sibling_addresses(ADAPTER, ["10.20.0.5", "2001:db8:aa:1:3d2e:9f4b:70c1:5a6e"])
+    assert one_left == ["2001:db8:aa:1::1da"]
+
+
+def test_a_matcher_forgets_what_it_decided_before_an_address_was_added() -> None:
+    m = s.Matcher(["10.0.0.5"])
+    v6 = pkt(src="2a00:1:2::5", dst="2606:4700::1")
+    assert not m.wanted(v6)  # decided, and remembered
+    m.add_networks(["2a00:1:2::5"])
+    assert m.wanted(v6)
+    m.add_networks(["2a00:1:2::5"])  # adding the same again changes nothing
+    assert len(m.networks) == 2
+
+
+def test_the_watcher_hands_over_each_new_address_once_as_privacy_addresses_rotate() -> None:
+    class Source:
+        addresses = ["10.0.0.5", "2a00:1:2::5"]
+
+        def local_addresses(self) -> list[str]:
+            return list(self.addresses)
+
+    source = Source()
+    watcher = s.AddressWatcher(source, lambda: ["10.0.0.5"])
+    assert watcher.available
+    watcher.scan()
+    assert watcher.take() == ["2a00:1:2::5"] and watcher.take() == []
+    watcher.scan()
+    assert watcher.take() == []  # nothing changed
+    source.addresses.append("2a00:1:2::6")  # a new temporary address appears
+    watcher.scan()
+    assert watcher.take() == ["2a00:1:2::6"]
+    assert not s.AddressWatcher(object(), lambda: []).available  # e.g. a capture file
+
+
+def test_a_failed_look_at_the_adapter_changes_nothing() -> None:
+    class Broken:
+        def local_addresses(self) -> list[str]:
+            raise OSError("adapter list unavailable")
+
+    watcher = s.AddressWatcher(Broken(), lambda: ["10.0.0.5"])
+    watcher.scan()
+    assert watcher.take() == []
+
+
+def test_a_pcap_capture_lists_the_addresses_of_its_own_device() -> None:
+    lib = FakeLib([])
+    lib.devices = lambda: DEVICES  # type: ignore[attr-defined]
+    cap = s.PcapCapture(lib, DEVICES[0][0])
+    assert cap.local_addresses() == ["fe80::1", "2a00:1:2::5", "10.181.2.111"]
+    gone = s.PcapCapture(lib, "unplugged")
+    assert gone.local_addresses() == []
+
+
+def wait_for(condition: Any, seconds: float = 5.0) -> bool:
+    end = time.time() + seconds
+    while time.time() < end:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_the_server_is_told_about_the_other_addresses_in_requests_of_at_most_32(
+    receiver: Any,
+) -> None:
+    r = receiver()
+    ex = s.Exporter(r.url, "sbi_key_123")
+    addresses = [f"2001:db8:aa::{n:x}" for n in range(1, 41)]
+    ex.announce(addresses)
+    assert wait_for(lambda: len(r.requests) == 2)
+    paths = {path for path, _, _ in r.requests}
+    assert paths == {"/api/v1/sensor/addresses"}
+    sent = [a for _, headers, body in r.requests for a in body["addresses"]]
+    assert sorted(sent) == sorted(addresses)
+    assert all(len(body["addresses"]) <= 32 for _, _, body in r.requests)
+    assert all(headers["x-api-key"] == "sbi_key_123" for _, headers, _ in r.requests)
+
+
+def test_an_older_server_is_told_about_politely_and_not_retried(
+    receiver: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    r = receiver(404)
+    ex = s.Exporter(r.url, "k")
+    assert ex._announce(["2001:db8::1"]) is False
+    assert len(r.requests) == 1  # a 404 is final
+    assert "older and does not take" in capsys.readouterr().err
+
+
+def test_a_failed_announcement_is_retried_then_gives_up(
+    receiver: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    r = receiver(503, 503, 202)
+    ex = s.Exporter(r.url, "k")
+    monkeypatch.setattr(ex._stop, "wait", lambda timeout=None: False)  # do not really wait
+    assert ex._announce(["2001:db8::1"]) is True and len(r.requests) == 3
+    r2 = receiver(503, 503, 503, 503, 503)
+    ex2 = s.Exporter(r2.url, "k")
+    monkeypatch.setattr(ex2._stop, "wait", lambda timeout=None: False)
+    assert ex2._announce(["2001:db8::1"]) is False and len(r2.requests) == 4
+    assert "could not tell the server" in capsys.readouterr().err
+    gone = s.Exporter("http://127.0.0.1:9", "k")  # nothing listens there
+    monkeypatch.setattr(gone._stop, "wait", lambda timeout=None: False)
+    assert gone._announce(["2001:db8::1"]) is False
+
+
+class AdapterCapture:
+    """A fake live capture on an adapter that has an IPv4 address and, once asked, IPv6 addresses."""
+
+    sees_ipv6, name, drops = True, "fake adapter capture", 0
+
+    def __init__(self, frames: list[Any], addresses: list[str]) -> None:
+        self.frames, self.addresses = frames, addresses
+
+    def local_addresses(self) -> list[str]:
+        return list(self.addresses)
+
+    def __iter__(self) -> Any:
+        yield from self.frames
+
+
+def run_live(monkeypatch: pytest.MonkeyPatch, capture: Any, argv: list[str]) -> int:
+    monkeypatch.setattr(s, "open_live", lambda a: capture)
+    monkeypatch.setattr(s.signal, "signal", lambda *a: None)  # not the test runner's handlers
+    monkeypatch.setattr(s, "off_route_warning", lambda n: None)
+    monkeypatch.setattr(s, "has_global_ipv6", lambda: False)
+    return s.main(argv)
+
+
+def machine_frames() -> list[Any]:
+    """The machine talks to a server over IPv4 and over IPv6 (one packet each way)."""
+    out = []
+    now = time.time()
+    for src, dst, sport, v6 in (
+        ("10.0.0.5", "93.184.216.34", 50001, False),
+        ("2001:db8:aa::5", "2606:2800::1", 50002, True),
+    ):
+        for a, b, p, q in ((src, dst, sport, 443), (dst, src, 443, sport)):
+            l4 = kit.tcp_segment(p, q, payload=100)
+            ip = kit.ipv6_packet(a, b, 6, l4) if v6 else kit.ipv4_packet(a, b, 6, l4)
+            out.append(
+                (now, kit.ether(ip, ethertype=0x86DD if v6 else 0x0800), "eth", 14 + len(ip))
+            )
+    return out
+
+
+def test_giving_one_ipv4_address_also_watches_and_announces_the_adapters_ipv6_addresses(
+    receiver: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    r = receiver()
+    capture = AdapterCapture(machine_frames(), ["10.0.0.5", "fe80::1", "2001:db8:aa::5"])
+    argv = ["--api-url", r.url, "--api-key", "sbi_k", "--ip", "10.0.0.5", "--idle-timeout", "3"]
+    assert run_live(monkeypatch, capture, argv) == 0
+
+    err = capsys.readouterr().err
+    assert "also watching the other addresses of this adapter: 2001:db8:aa::5" in err
+    flows = [f for path, _, body in r.requests if path.endswith("/flows") for f in body["flows"]]
+    assert {(f["src_ip"], f["dst_ip"]) for f in flows} == {
+        ("10.0.0.5", "93.184.216.34"),
+        ("2001:db8:aa::5", "2606:2800::1"),  # the IPv6 flow is kept too
+    }
+    assert wait_for(lambda: any(path.endswith("/sensor/addresses") for path, _, _ in r.requests))
+    (told,) = [body for path, _, body in r.requests if path.endswith("/sensor/addresses")]
+    assert told == {"addresses": ["2001:db8:aa::5"]}
+
+
+def test_a_dry_run_watches_the_other_addresses_but_tells_nobody(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    capture = AdapterCapture(machine_frames(), ["10.0.0.5", "2001:db8:aa::5"])
+    assert run_live(monkeypatch, capture, ["--dry-run", "--ip", "10.0.0.5"]) == 0
+    out = capsys.readouterr()
+    assert "2001:db8:aa::5" in out.err
+    assert '"src_ip": "2001:db8:aa::5"' in out.out
+
+
+def test_without_a_way_to_list_addresses_the_user_is_told_how_to_include_ipv6(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Native:  # e.g. the Linux packet socket: it sees IPv6 but cannot list the adapter's addresses
+        sees_ipv6, name, drops = True, "native capture", 0
+
+        def __iter__(self) -> Any:
+            yield from machine_frames()
+
+    monkeypatch.setattr(s, "open_live", lambda a: Native())
+    monkeypatch.setattr(s.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(s, "off_route_warning", lambda n: None)
+    monkeypatch.setattr(s, "has_global_ipv6", lambda: True)
+    assert s.main(["--dry-run", "--ip", "10.0.0.5"]) == 0
+    assert "also has IPv6 addresses" in capsys.readouterr().err
+    assert s.main(["--dry-run", "--ip", "10.0.0.0/24"]) == 0  # a range: not a single machine
+    assert "also has IPv6 addresses" not in capsys.readouterr().err
 
 
 def test_the_sensor_stays_runnable_on_python_3_9() -> None:

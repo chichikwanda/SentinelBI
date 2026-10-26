@@ -118,7 +118,7 @@ def _monitored(source_id: uuid.UUID | None) -> str:
     return (
         "EXISTS (SELECT 1 FROM sources s WHERE s.org_id = :org"  # noqa: S608 - constant fragments, bound values
         + scope
-        + " AND sides.ip <<= s.cidr)"
+        + " AND (sides.ip <<= s.cidr OR sides.ip <<= ANY (s.extra_cidrs)))"
     )
 
 

@@ -15,7 +15,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import CIDR, INET, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, CIDR, INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import SourceMethod, SourceStatus, sql_in
@@ -43,6 +43,11 @@ class Source(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     cidr: Mapped[str] = mapped_column(CIDR, nullable=False)
+    # Further addresses of the same machine, reported by its sensor (the IPv6 addresses of the
+    # adapter whose IPv4 address was registered). Counted as monitored alongside ``cidr``.
+    extra_cidrs: Mapped[list[str]] = mapped_column(
+        ARRAY(CIDR), nullable=False, default=list, server_default=text("'{}'::cidr[]")
+    )
     method: Mapped[str] = mapped_column(Text, nullable=False)
     # SHA-256 of the API key; the plaintext is shown once at creation (ADR-010).
     api_key_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
