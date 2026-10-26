@@ -873,12 +873,18 @@ def test_a_probe_is_counted_by_direction_whatever_the_ipv6_spelling() -> None:
 class ScriptedCapture:
     """A fake live capture: after the self-test it 'sees' whichever families it is told to."""
 
-    def __init__(self, sees: dict[str, bool], sees_ipv6: bool = True) -> None:
+    def __init__(self, sees: dict[str, bool], sees_ipv6: bool = True, delay: float = 0.0) -> None:
         self.sees, self.sees_ipv6, self.name = sees, sees_ipv6, "scripted capture"
+        # libpcap/Npcap hand packets over in batches, so they can arrive well after the request
+        self.delay, self.probe_started = delay, 0.0
 
     def __iter__(self) -> Any:
         yield None  # the capture opens
         while True:
+            if time.time() < self.probe_started + self.delay:
+                time.sleep(0.02)
+                yield None
+                continue
             for label, (src, dst) in {
                 "v4": ("10.0.0.5", "93.184.1.1"),
                 "v6": ("2a00:1:2::5", "2606::1"),
@@ -909,7 +915,7 @@ class ScriptedCapture:
             yield None
 
 
-def run_check(monkeypatch: pytest.MonkeyPatch, capture: Any) -> int:
+def run_check(monkeypatch: pytest.MonkeyPatch, capture: Any, drain: float = 0.05) -> int:
     monkeypatch.setattr(s, "self_test", lambda a: 0)
     monkeypatch.setattr(s, "open_live", lambda a: capture)
     endpoints = {
@@ -918,10 +924,12 @@ def run_check(monkeypatch: pytest.MonkeyPatch, capture: Any) -> int:
     }
 
     def fake_probe(family: int, result: dict) -> None:
+        capture.probe_started = time.time()
         result["local"], result["remote"] = endpoints[family]
         result["ok"] = True
 
     monkeypatch.setattr(s, "probe_family", fake_probe)
+    monkeypatch.setattr(s, "CHECK_DRAIN_SECONDS", drain)
     return s.main(["--check"])
 
 
@@ -955,9 +963,23 @@ def test_check_does_not_blame_the_capture_when_a_family_cannot_be_tested(
             result["error"] = "Network is unreachable"  # a machine with no IPv6 route
 
     monkeypatch.setattr(s, "probe_family", probe)
+    monkeypatch.setattr(s, "CHECK_DRAIN_SECONDS", 0.05)
     assert s.main(["--check"]) == 0
     err = capsys.readouterr().err
     assert "IPv6: not testable here" in err and "NOT SEEN" not in err
+
+
+def test_check_keeps_listening_after_a_quick_request_for_packets_that_arrive_in_batches(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found on a real Windows laptop with Npcap: the IPv6 request finished in well under a second, the
+    packets reached the program 0.5 s later, and the check had already given up and reported NOT SEEN."""
+    capture = ScriptedCapture({"v4": True, "v6": True}, delay=1.2)
+    assert run_check(monkeypatch, capture, drain=2.0) == 0
+    err = capsys.readouterr().err
+    assert "IPv4: OK" in err and "IPv6: OK" in err
+    # and a capture that really is blind still fails once the listening time is up
+    assert run_check(monkeypatch, ScriptedCapture({"v4": True, "v6": False}, delay=1.2), 2.0) == 1
 
 
 def test_check_stops_at_a_failed_self_test(monkeypatch: pytest.MonkeyPatch) -> None:

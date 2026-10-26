@@ -1028,6 +1028,9 @@ def privilege_hint() -> str:
     return "live capture needs root (sudo) or the NET_RAW capability (docker run --cap-add=NET_RAW)"
 
 
+CHECK_DRAIN_SECONDS = 2.0  # how long --check keeps listening after a probe request has finished
+
+
 def probe_family(family: int, result: Dict[str, Any]) -> None:
     """One short HTTP request over the given address family; records the two endpoints it used."""
     try:
@@ -1075,13 +1078,18 @@ def check_capture(args: argparse.Namespace) -> int:
             worker.start()
             packets: List[Packet] = []
             end = time.time() + 12
+            finished_at: Optional[float] = None
             while time.time() < end:
                 raw = next(stream)
                 if raw is not None:
                     pkt = parse_raw(raw)
                     if pkt is not None:
                         packets.append(pkt)
-                if not worker.is_alive() and time.time() > end - 11:
+                if finished_at is None and not worker.is_alive():
+                    finished_at = time.time()
+                # libpcap/Npcap hand packets over in batches (up to 500 ms), so a quick request is
+                # often finished before its packets arrive: keep listening after it ends.
+                if finished_at is not None and time.time() > finished_at + CHECK_DRAIN_SECONDS:
                     break
             if not result.get("ok"):
                 verdicts.append(
