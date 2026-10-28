@@ -672,3 +672,58 @@ migration 0002: the one-shot `migrate` service is not re-run by `up`. The API st
 `alembic_version` still said 0002, so the new column did not exist (I did not call the new endpoint in that state).
 Checking `alembic_version` after a deployment caught it; startup.md now says to run the full
 `docker compose up -d --build --wait` or `docker compose run --rm migrate`.
+
+---
+
+## ADR-029: finding the IPs you registered, sent and received everywhere, and a report you can choose and print
+
+**Why.** The first real session on the author's laptop gave three complaints: after logging in there was no way to
+open the IPs already registered; the Traffic page showed only a total for each peer and service, not what was sent
+and what was received; and the reports were two fixed downloads with nothing to choose or print.
+
+**What was actually wrong with the first one.** The registered IP was only in the Sources table at the bottom of a
+long page, not clickable. The one card that listed hosts showed only addresses with traffic inside the chart's window
+(an hour by default). The sensor had stopped two days earlier, so every number was zero and nothing led anywhere.
+
+**Decisions.**
+
+| Question | Options | Chosen |
+|---|---|---|
+| How to list registered IPs | list only hosts with traffic; or list registered single addresses even when quiet | Quiet registered addresses are listed (`include_idle`, opt-in, all zeros, `last_seen` null). A network range is not expanded into hosts: its hosts appear once they have traffic. A full page never adds idle rows, because a limit can cut busy hosts off and they must not come back as idle |
+| Where on the dashboard | keep at the bottom; or directly under the headline numbers | A "Monitored IPs" card directly under them, replacing the old top-5 card. Status comes from the source's health, and a note says when a source last reported, because a stopped sensor is the usual reason for an empty row |
+| What an empty window says | zeros only; or when it was last active | The host page says "last active 45 h ago" and offers the next longer window in one click. The API returns `last_seen` (latest in the window, or ever when the window is empty). That lookup scans the organisation's flows by destination without an index, and runs only when the window is empty, which is fine at this size and would need an index at scale |
+| Sent and received per peer and service | a second column of tooltips; or real columns | Real columns (sent, received, total, flows) with a stacked bar, blue sent and orange received, legend because there are two series. `top` (1 to 100) sets how many are listed. Per-row figures add up to the host's totals when nothing is cut off, and a test checks it |
+| Report format | server-rendered PDF with charts; or the on-screen report printed by the browser | The on-screen report, printed by the browser ("Save as PDF" keeps a file). The graphs are the same ones shown on screen, so there is no second chart implementation to keep right. Every table also downloads as CSV (`/reports/traffic.csv?section=hosts, peers, services or timeline`, repeated `ip=`, at most 20). The security summary PDF is unchanged |
+| Summary vs detailed | two fixed reports; or presets over independent sections | Two presets (summary: totals, hosts, a graph per host; detailed adds who each host talked to and what it used) over sections the reader can tick, up to 10 hosts and a period from 1 hour to 30 days |
+
+**Printing from a dark-mode browser was broken by default.** The app's dark theme follows the browser's setting, and a
+browser in dark mode keeps that setting when printing. Measured on a bare page in Chromium with print and dark
+emulated: the old rules print text `rgb(237,237,237)`, the pale theme colour, onto white paper, and the fix prints
+`rgb(23,23,23)`. The fix makes Tailwind's `dark:` variant and the dark colour tokens apply on screen only, keeps chart
+colours when printing (browsers drop background colours, and the stacked bars are backgrounds), and hides the
+navigation and controls. A real print rendering (Chromium to PDF, then to images) also showed a blank last page,
+caused by the full-screen-height wrapper, and a half-empty first page, caused by starting every host on a new page; both
+are fixed, and the detailed report for one host now prints on 2 pages. A browser test asserts the printed colours,
+the hidden menu and controls, and that a PDF is produced.
+
+**Graph labels.** A 7 or 30 day graph labelled only "06:00" and "12:00", which repeat. Over 36 hours labels now carry
+the weekday, and over 8 days the date.
+
+**Verified.** 328 backend tests (15 new: idle addresses, tenant isolation, sent and received adding up, the CSV tables,
+last-seen) and 11 browser tests (4 new). Lint, formatting, mypy and the TypeScript checks are clean. A throwaway
+account set up like the author's (a sensor IP, a sensor that stopped two days ago, an announced IPv6 address, traffic
+from two days ago) was viewed in dark mode at the author's browser size, and its printed PDF was rendered to images and
+read.
+
+**Not verified, and limits.**
+- Printing was checked in Chromium only; Firefox and Safari print engines may paginate differently.
+- The report has no organisation name or logo (the user record carries only the organisation's id).
+- The sensor's API key is stored only as a hash, so it cannot be shown again. A source whose sensor stopped needs the
+  command from when it was created. Rotating a key would solve it and is not built.
+- The report preview is capped at 10 hosts; the CSV takes up to 20.
+- A source registered twice for the same IP (the author has older ones) shows once, labelled with the oldest source.
+
+**Found while building.** The new card repeats a source's name, which broke an existing browser test that found rows
+by name; the test now looks only inside the Sources table. With the machine's CPU throttled to a third of its speed the
+backend suite took 26 minutes instead of about 90 seconds, and Docker health checks briefly failed; neither was a code
+fault: the suite passed on its first run, only slowly. The browser suite was run with one worker for the same reason.

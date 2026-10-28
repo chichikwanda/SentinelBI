@@ -96,7 +96,9 @@ for Windows, Linux and Docker with your key and address filled in (on Windows, i
 IPv6 as well, see `sensor/README.md`), plus a tab that replays a bundled
 synthetic capture for trying it without admin rights. Within seconds the **Traffic** page shows how much each
 monitored host sent and received, who it talked to and which services it used; the dashboard shows the
-volume and a Flows/Data chart; Reports has a per-host CSV and the PDF summary includes the same table.
+volume and a Flows/Data chart; the dashboard's Monitored IPs card lists every registered IP (also when quiet)
+and opens its page; Reports builds a summary or detailed data-volume report you choose the sections of, prints
+it (graphs included) and downloads each table as CSV.
 
 **Router NetFlow.** For whole networks: the wizard gives copy-paste router config (MikroTik, pfSense,
 Cisco) or an HTTP/curl example, then polls until the first flows arrive. NetFlow exporters are accepted only
@@ -106,11 +108,11 @@ pairs a router's one-record-per-direction output into bidirectional flows before
 ## What is in the UI
 
 Dashboard (risk gauge, KPIs incl. data volume, traffic chart with a Flows/Data switch, top talkers,
-protocols, top attackers, monitored hosts, live alerts, sources) · Traffic (data sent and received per
-monitored host, over time, with top peers and services) · Alerts (filters, CSV export) and alert detail (evidence, triage, recommendations, why
+protocols, top attackers, monitored IPs, live alerts, sources) · Traffic (data sent and received per
+monitored host, over time, with sent and received for each top peer and service) · Alerts (filters, CSV export) and alert detail (evidence, triage, recommendations, why
 the model flagged it when the model supports it) · Actions (the ranked to-do list with framework
 references and a data-protection note) · Risk (assets, 24 h trend) · Models (registry, comparison,
-per-class metrics, limitations, activate) · Reports (PDF summary, alerts CSV, data-volume CSV) · Evaluate (SUS and TAM
+per-class metrics, limitations, activate) · Reports (data-volume report builder: summary or detailed, printable, CSV per table; PDF security summary; alerts CSV) · Evaluate (SUS and TAM
 forms, aggregate for admins) · Add source (wizard: quick-start sensor, router NetFlow or HTTP API).
 
 ## Test

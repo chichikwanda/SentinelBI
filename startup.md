@@ -101,7 +101,35 @@ only, never contents.
    `python sentinelbi_sensor.py --check`: it makes one request over IPv4 and one over IPv6 and tells you whether
    the capture saw each. Exit code 0 means every family it could test was seen.
 3. Within seconds the wizard says "First flows received". Open **Traffic** to see how much that host sent and
-   received, who it talked to and which services it used. **Reports** has the per-host CSV and the PDF.
+   received, who it talked to and which services it used. **Reports** builds a printable report from it.
+
+### Find your monitored IPs again
+
+After you log in, the dashboard's **Monitored IPs** card (under the headline numbers) lists every IP you
+registered, plus the other addresses its sensor reported, whether or not it has traffic right now. Each row has
+a status (Receiving, No recent flows, Waiting for flows), what it sent and received in the last 24 hours, and
+**View traffic**. The Sources table further down links the same way (a single IP opens its page, a network range
+opens the hosts seen inside it).
+
+An IP that looks empty is usually a sensor that stopped: the card says when the source last reported. Open
+its traffic page; for an empty window it says when the address was last active and offers the next longer
+window (7 or 30 days) in one click. The data a sensor already sent is kept, but there is no way yet to show its
+API key again (only a hash is stored), so keep the sensor command from when you created the source.
+
+### Sent and received, everywhere
+
+On **Traffic**, the host's **Who it talked to** and **What it used** tables list, for each peer and each
+service, what the host sent, what it received, the total and the number of flows, with a stacked bar (blue is
+sent, orange is received). Sent and received are from the monitored host's own point of view.
+
+### Reports: summary or detailed, and printing
+
+**Reports** starts with a builder: choose the period (1 hour to 30 days), **Summary** (totals, hosts table and a
+graph per host) or **Detailed** (adds who each host talked to and what it used), tick or untick any section, and
+choose up to 10 hosts. The report appears below; **Print or save as PDF** prints only the report (white paper
+and dark text even when your browser is in dark mode), and in the print window "Save as PDF" keeps a file. Every
+table has its own **Download CSV**: hosts, graph data over time, peers, services. `?ip=` and `?hours=` in the
+address preselect a host and a period; the Traffic page's "Make a report for this address" uses that.
 
 No admin rights, or just trying it? From the project folder, replay the bundled synthetic capture onto your own
 address (the wizard's last tab prints this with your key):
