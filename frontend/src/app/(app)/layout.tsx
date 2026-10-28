@@ -12,8 +12,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!(await cookies()).has(COOKIE_NAME)) redirect("/login");
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="border-b border-black/10 dark:border-white/15">
+    <div className="flex min-h-screen flex-col print:min-h-0">
+      <header className="border-b border-black/10 dark:border-white/15 print:hidden">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
           <nav className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
             <Link href="/dashboard" className="text-base font-semibold">

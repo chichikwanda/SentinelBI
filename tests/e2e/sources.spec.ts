@@ -24,7 +24,7 @@ test("an administrator can remove a source, and its API key stops working", asyn
 
   // remove it from the dashboard; the confirmation says what removal does
   await page.getByRole("link", { name: "Dashboard", exact: true }).first().click();
-  const row = page.getByRole("row", { name: /Throwaway source/ });
+  const row = page.getByTestId("sources-body").getByRole("row", { name: /Throwaway source/ });
   await expect(row).toBeVisible({ timeout: 30_000 });
   page.once("dialog", async (dialog) => {
     expect(dialog.message()).toContain("Throwaway source");
@@ -33,7 +33,7 @@ test("an administrator can remove a source, and its API key stops working", asyn
     await dialog.accept();
   });
   await row.getByTestId("remove-source").click();
-  await expect(page.getByRole("row", { name: /Throwaway source/ })).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByTestId("sources-body").getByRole("row", { name: /Throwaway source/ })).toHaveCount(0, { timeout: 30_000 });
 
   // the key is revoked at once
   const after = await request.post(`${API}/api/v1/ingest/flows`, { headers: { "X-API-Key": apiKey }, data: { flows: [flow] } });
@@ -54,10 +54,10 @@ test("declining the confirmation keeps the source", async ({ page }) => {
   await page.getByTestId("create-source").click();
   await expect(page.getByTestId("api-key")).toBeVisible();
   await page.getByRole("link", { name: "Dashboard", exact: true }).first().click();
-  const row = page.getByRole("row", { name: /Keep me/ });
+  const row = page.getByTestId("sources-body").getByRole("row", { name: /Keep me/ });
   await expect(row).toBeVisible({ timeout: 30_000 });
   page.once("dialog", (dialog) => dialog.dismiss());
   await row.getByTestId("remove-source").click();
   await page.waitForTimeout(1500);
-  await expect(page.getByRole("row", { name: /Keep me/ })).toHaveCount(1);
+  await expect(page.getByTestId("sources-body").getByRole("row", { name: /Keep me/ })).toHaveCount(1);
 });

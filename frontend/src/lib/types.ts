@@ -96,7 +96,17 @@ export interface HostVolume {
   received_bytes: number;
   total_bytes: number;
   flows: number;
-  last_seen: string;
+  /** null for a registered address with no traffic in the window */
+  last_seen: string | null;
+  source_id: string | null;
+  source_name: string | null;
+}
+/** What one address sent to and received from a peer or over a service. */
+export interface SplitVolume {
+  sent_bytes: number;
+  received_bytes: number;
+  bytes: number;
+  flows: number;
 }
 export interface HostDetail {
   ip: string;
@@ -106,9 +116,11 @@ export interface HostDetail {
   received_bytes: number;
   total_bytes: number;
   flows: number;
+  /** latest flow in the window; when the window is empty, the latest ever seen (or null) */
+  last_seen: string | null;
   points: { t: string; sent: number; received: number; flows: number }[];
-  peers: { ip: string; bytes: number; flows: number }[];
-  services: { service: string; protocol: string; bytes: number; flows: number }[];
+  peers: (SplitVolume & { ip: string })[];
+  services: (SplitVolume & { service: string; protocol: string })[];
 }
 export interface ProtocolShare {
   protocol: string;

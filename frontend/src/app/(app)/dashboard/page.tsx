@@ -27,7 +27,7 @@ import type {
   TrafficSeries,
   TrafficSummary,
 } from "@/lib/types";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, quietFor, timeAgo } from "@/lib/utils";
 
 const LIVE_MS = 3000;
 const WINDOWS = [
@@ -121,6 +121,95 @@ function Stat({ label, value, sub, testId }: { label: string; value: React.React
   );
 }
 
+function IpRow({ host }: { host: HostVolume }) {
+  const { data: health } = useQuery({
+    queryKey: ["source-health", host.source_id],
+    queryFn: () => api<SourceHealth>(`sources/${host.source_id}/health`),
+    refetchInterval: 5000,
+    enabled: Boolean(host.source_id),
+  });
+  const href = `/traffic?ip=${encodeURIComponent(host.ip)}`;
+  return (
+    <tr data-testid="monitored-ip">
+      <Td className="font-mono text-xs">
+        <Link href={href} className="text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
+          {host.ip}
+        </Link>
+      </Td>
+      <Td>{host.source_name ?? "–"}</Td>
+      <Td>{host.source_id ? <HealthPill health={health} /> : "–"}</Td>
+      <Td className="text-right tabular-nums">{formatBytes(host.sent_bytes)}</Td>
+      <Td className="text-right tabular-nums">{formatBytes(host.received_bytes)}</Td>
+      <Td>{host.last_seen ? timeAgo(host.last_seen) : "none in 24 h"}</Td>
+      <Td className="text-right">
+        <Link href={href}>
+          <Button size="sm" variant="outline" aria-label={`View traffic for ${host.ip}`}>
+            View traffic
+          </Button>
+        </Link>
+      </Td>
+    </tr>
+  );
+}
+
+/** Every IP the organisation registered (plus the hosts seen inside a registered range), whether or
+ *  not it has traffic right now, each one a way into its traffic page. */
+function MonitoredIps({ hosts, sources }: { hosts?: HostVolume[]; sources: Source[] }) {
+  // a sensor that has stopped reporting is the usual reason an IP looks empty: say so
+  const quiet = sources.filter((s) => quietFor(s.last_seen, 120));
+  return (
+    <Card data-testid="monitored-ips">
+      <CardHeader>
+        <div>
+          <CardTitle>Monitored IPs</CardTitle>
+          <p className="mt-0.5 text-xs text-black/60 dark:text-white/60">
+            Last 24 hours. Open one to see what it sent and received, who it talked to and what it used.
+          </p>
+        </div>
+        <Link href="/traffic" className="text-sm text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
+          All hosts and details
+        </Link>
+      </CardHeader>
+      <CardContent className="p-0">
+        {hosts && hosts.length === 0 ? (
+          <p className="p-4 text-sm text-black/60 dark:text-white/60" data-testid="no-hosts">
+            No single IP is registered yet, and no host inside a registered range has had traffic. Hosts of a
+            network range appear here once they send or receive data.
+          </p>
+        ) : (
+          <Table>
+            <thead>
+              <tr>
+                <Th>IP</Th>
+                <Th>Source</Th>
+                <Th>Status</Th>
+                <Th className="text-right">Sent</Th>
+                <Th className="text-right">Received</Th>
+                <Th>Last seen</Th>
+                <Th />
+              </tr>
+            </thead>
+            <tbody data-testid="top-hosts">
+              {(hosts ?? []).map((h) => (
+                <IpRow key={h.ip} host={h} />
+              ))}
+            </tbody>
+          </Table>
+        )}
+        {quiet.length > 0 && (
+          <p className="border-t border-black/10 px-4 py-3 text-xs text-black/65 dark:border-white/10 dark:text-white/65" data-testid="quiet-sources">
+            {quiet
+              .map((s) => (s.last_seen ? `${s.name} last reported ${timeAgo(s.last_seen)}` : `${s.name} has not reported yet`))
+              .join("; ")}
+            . Monitoring resumes when the sensor (or router) for it sends data again; what was already received
+            is kept, and a longer window on the traffic page shows it.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function SourceRow({
   source,
   onRemove,
@@ -133,9 +222,17 @@ function SourceRow({
     queryFn: () => api<SourceHealth>(`sources/${source.id}/health`),
     refetchInterval: 5000,
   });
+  // a single address opens its own page; a range opens the list of hosts seen inside it
+  const trafficHref = source.cidr.includes("/")
+    ? `/traffic?source=${encodeURIComponent(source.id)}`
+    : `/traffic?ip=${encodeURIComponent(source.cidr)}`;
   return (
     <tr>
-      <Td className="font-medium">{source.name}</Td>
+      <Td className="font-medium">
+        <Link href={trafficHref} className="text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
+          {source.name}
+        </Link>
+      </Td>
       <Td className="font-mono text-xs">
         {source.cidr}
         {source.extra_cidrs && source.extra_cidrs.length > 0 && (
@@ -155,6 +252,13 @@ function SourceRow({
       </Td>
       <Td className="text-right tabular-nums">{health?.flows_total ?? "–"}</Td>
       <Td>{timeAgo(health?.last_seen ?? source.last_seen)}</Td>
+      <Td className="text-right">
+        <Link href={trafficHref}>
+          <Button size="sm" variant="outline" aria-label={`View traffic for ${source.name}`}>
+            View traffic
+          </Button>
+        </Link>
+      </Td>
       {onRemove && (
         <Td className="text-right">
           <Button
@@ -225,9 +329,9 @@ export default function DashboardPage() {
     queryFn: () => api<TrafficSummary>("traffic/summary?minutes=1440"),
     refetchInterval: 10000,
   });
-  const hosts = useQuery({
-    queryKey: ["traffic-hosts", minutes, "top"],
-    queryFn: () => api<HostVolume[]>(`traffic/hosts?minutes=${minutes}&limit=5`),
+  const ips = useQuery({
+    queryKey: ["traffic-hosts", 1440, "monitored"],
+    queryFn: () => api<HostVolume[]>("traffic/hosts?minutes=1440&limit=20&include_idle=true"),
     refetchInterval: 10000,
   });
   const talkers = useQuery({
@@ -317,6 +421,8 @@ export default function DashboardPage() {
           sub={ov?.model.version ? `Model: ${ov.model.version}` : "No model active"}
         />
       </div>
+
+      {!noSources && <MonitoredIps hosts={ips.data} sources={sources.data ?? []} />}
 
       <Card>
         <CardHeader>
@@ -409,47 +515,6 @@ export default function DashboardPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Monitored hosts: data volume</CardTitle>
-          <Link href="/traffic" className="text-sm text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
-            All hosts and details
-          </Link>
-        </CardHeader>
-        <CardContent className="p-0">
-          {hosts.data && hosts.data.length === 0 ? (
-            <p className="p-4 text-sm text-black/60 dark:text-white/60" data-testid="no-hosts">
-              No monitored host has traffic in this window yet.
-            </p>
-          ) : (
-            <Table>
-              <thead>
-                <tr>
-                  <Th>Host</Th>
-                  <Th className="text-right">Sent</Th>
-                  <Th className="text-right">Received</Th>
-                  <Th className="text-right">Total</Th>
-                </tr>
-              </thead>
-              <tbody data-testid="top-hosts">
-                {(hosts.data ?? []).map((h) => (
-                  <tr key={h.ip}>
-                    <Td className="font-mono text-xs">
-                      <Link href={`/traffic?ip=${encodeURIComponent(h.ip)}`} className="text-blue-700 underline-offset-2 hover:underline dark:text-blue-300">
-                        {h.ip}
-                      </Link>
-                    </Td>
-                    <Td className="text-right tabular-nums">{formatBytes(h.sent_bytes)}</Td>
-                    <Td className="text-right tabular-nums">{formatBytes(h.received_bytes)}</Td>
-                    <Td className="text-right tabular-nums">{formatBytes(h.total_bytes)}</Td>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
           <CardTitle>Live alerts</CardTitle>
           <div className="flex items-center gap-3">
             <LiveDot active={!alerts.isError} />
@@ -496,10 +561,11 @@ export default function DashboardPage() {
                   <Th>Status</Th>
                   <Th className={cn("text-right")}>Flows</Th>
                   <Th>Last seen</Th>
+                  <Th />
                   {canRemove && <Th />}
                 </tr>
               </thead>
-              <tbody>
+              <tbody data-testid="sources-body">
                 {(sources.data ?? []).map((s) => (
                   <SourceRow key={s.id} source={s} onRemove={canRemove ? confirmRemove : undefined} />
                 ))}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import { formatBytes, formatClock, formatNumber, niceMax } from "@/lib/format";
+import { formatAxisTime, formatBytes, formatNumber, niceMax } from "@/lib/format";
 
 export interface VolumePoint {
   t: string;
@@ -21,6 +21,7 @@ const PLOT_H = H - M.top - M.bottom;
 export function VolumeChart({ points, bucketMinutes }: { points: VolumePoint[]; bucketMinutes: number }) {
   const ref = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
+  const spanMs = points.length > 1 ? Date.parse(points[points.length - 1].t) - Date.parse(points[0].t) : 0;
 
   const { max, xs, line, ticksY, ticksX } = useMemo(() => {
     const n = points.length;
@@ -31,7 +32,7 @@ export function VolumeChart({ points, bucketMinutes }: { points: VolumePoint[]; 
       points.map((p, i) => `${i === 0 ? "M" : "L"}${xs[i].toFixed(1)},${y(pick(p)).toFixed(1)}`).join(" ");
     const ticksY = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ v: max * f, y: M.top + PLOT_H - f * PLOT_H }));
     const step = Math.max(1, Math.floor((n - 1) / 4));
-    const ticksX = points.map((p, i) => ({ i, label: formatClock(p.t) })).filter(({ i }) => i % step === 0);
+    const ticksX = points.map((p, i) => ({ i, label: formatAxisTime(p.t, spanMs) })).filter(({ i }) => i % step === 0);
     return {
       max,
       xs,
@@ -39,7 +40,7 @@ export function VolumeChart({ points, bucketMinutes }: { points: VolumePoint[]; 
       ticksY,
       ticksX,
     };
-  }, [points]);
+  }, [points, spanMs]);
 
   const totalSent = points.reduce((s, p) => s + p.sent, 0);
   const totalReceived = points.reduce((s, p) => s + p.received, 0);
@@ -126,7 +127,7 @@ export function VolumeChart({ points, bucketMinutes }: { points: VolumePoint[]; 
             color: "var(--viz-ink)",
           }}
         >
-          <div className="font-medium">{formatClock(hp.t)}</div>
+          <div className="font-medium">{formatAxisTime(hp.t, spanMs)}</div>
           <div style={{ color: "var(--viz-ink-2)" }}>
             Sent {formatBytes(hp.sent)}, received {formatBytes(hp.received)}
           </div>
@@ -134,7 +135,7 @@ export function VolumeChart({ points, bucketMinutes }: { points: VolumePoint[]; 
         </div>
       )}
 
-      <details className="mt-2 text-xs" style={{ color: "var(--viz-ink-2)" }}>
+      <details className="mt-2 text-xs print:hidden" style={{ color: "var(--viz-ink-2)" }}>
         <summary className="cursor-pointer">View as table</summary>
         <div className="mt-2 max-h-56 overflow-auto">
           <table className="w-full text-left tabular-nums">
@@ -149,7 +150,7 @@ export function VolumeChart({ points, bucketMinutes }: { points: VolumePoint[]; 
             <tbody>
               {points.map((p) => (
                 <tr key={p.t}>
-                  <td className="pr-3">{formatClock(p.t)}</td>
+                  <td className="pr-3">{formatAxisTime(p.t, spanMs)}</td>
                   <td className="pr-3">{formatBytes(p.sent)}</td>
                   <td className="pr-3">{formatBytes(p.received)}</td>
                   <td>{formatNumber(p.flows)}</td>

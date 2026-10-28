@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* The dark theme is for the screen. Paper is white: printing from a dark-mode browser must give dark
+   text on white, so Tailwind's dark: utilities and the dark colour tokens apply on screen only. */
+@custom-variant dark (@media screen and (prefers-color-scheme: dark));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,7 +16,7 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
+@media screen and (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
@@ -43,7 +47,7 @@ body {
   --sev-medium: #fab219;
   --sev-low: #898781;
 }
-@media (prefers-color-scheme: dark) {
+@media screen and (prefers-color-scheme: dark) {
   .viz-root {
     color-scheme: dark;
     --viz-ink: #f0efec;
@@ -54,5 +58,22 @@ body {
     --series-1: #3987e5;
     --series-2: #d95926;
     --div-neg: #e66767;
+  }
+}
+
+@media print {
+  @page {
+    margin: 14mm;
+  }
+  html,
+  body {
+    height: auto;
+    min-height: 0;
+  }
+  /* browsers drop background colours when printing: the chart bars are backgrounds, keep them */
+  .viz-root,
+  .viz-root * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

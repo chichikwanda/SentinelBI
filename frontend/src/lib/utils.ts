@@ -16,3 +16,8 @@ export function timeAgo(iso: string | null | undefined, now: number = Date.now()
   if (hours < 48) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
 }
+
+/** True when nothing has been seen for longer than ``seconds`` (or never). */
+export function quietFor(iso: string | null | undefined, seconds: number, now: number = Date.now()): boolean {
+  return !iso || now - new Date(iso).getTime() > seconds * 1000;
+}
