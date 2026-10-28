@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 
 from app.core.deps import PrincipalDep, SessionDep
@@ -13,11 +14,18 @@ from app.core.enums import AlertStatus
 from app.db.models import Alert, ModelRegistry, Organization, Recommendation, flows
 from app.services import analytics
 from app.services.prescriptive.engine import rank_score
-from app.services.reports import alerts_csv, summary_pdf, traffic_csv
+from app.services.reports import (
+    alerts_csv,
+    summary_pdf,
+    traffic_csv,
+    traffic_section_csv,
+    traffic_section_rows,
+)
 from app.services.risk.aggregate import compute_org_risk
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 _OPEN = (AlertStatus.NEW.value, AlertStatus.ACKNOWLEDGED.value)
+MAX_REPORT_HOSTS = 20
 
 
 @router.get("/alerts.csv")
@@ -46,15 +54,51 @@ async def traffic_export(
     principal: PrincipalDep,
     session: SessionDep,
     hours: Annotated[int, Query(ge=1, le=720)] = 24,
+    section: Annotated[
+        Literal["hosts", "peers", "services", "timeline"],
+        Query(description="which table: hosts (default), peers, services or timeline"),
+    ] = "hosts",
+    ip: Annotated[
+        list[str] | None,
+        Query(max_length=MAX_REPORT_HOSTS, description="limit the report to these addresses"),
+    ] = None,
 ) -> Response:
-    """Sent and received bytes per monitored host over the last ``hours``."""
+    """Sent and received bytes over the last ``hours``, as the summary table (one row per
+    monitored host, registered addresses included even when quiet) or, per host, as a detailed
+    table of its peers, its services or its volume over time."""
+    now, minutes = datetime.now(UTC), hours * 60
+    wanted: list[str] = []
+    for raw in ip or []:
+        try:
+            address = str(ipaddress.ip_address(raw.strip()))
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, f"{raw!r} is not a valid IP address"
+            ) from exc
+        if address not in wanted:
+            wanted.append(address)
     hosts = await analytics.host_volumes(
-        session, principal.org_id, hours * 60, 1000, datetime.now(UTC)
+        session, principal.org_id, minutes, 1000, now, include_idle=True
     )
+    if wanted:
+        hosts = [h for h in hosts if h["ip"] in wanted]
+        known = {h["ip"] for h in hosts}  # an address with no row at all still gets its tables
+        extra = [{"ip": a} for a in wanted if a not in known]
+    else:
+        hosts, extra = hosts[:MAX_REPORT_HOSTS] if section != "hosts" else hosts, []
+    if section == "hosts":
+        content = traffic_csv(hosts)
+    else:
+        details = [
+            await analytics.host_detail(session, principal.org_id, h["ip"], minutes, now, top=100)
+            for h in (*hosts, *extra)
+        ]
+        content = traffic_section_csv(section, traffic_section_rows(section, details))
+    name = "traffic" if section == "hosts" else f"traffic-{section}"
     return Response(
-        content=traffic_csv(hosts),
+        content=content,
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="sentinelbi-traffic.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="sentinelbi-{name}.csv"'},
     )
 
 

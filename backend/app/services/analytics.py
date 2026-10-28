@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -166,6 +167,44 @@ async def traffic_summary(
     }
 
 
+def _source_of(column: str, source_id: uuid.UUID | None) -> str:
+    """The source an address belongs to (the oldest when ranges overlap), for labelling a host."""
+    scope = " AND s.id = :source" if source_id else ""
+    return (
+        f"(SELECT s.{column} FROM sources s WHERE s.org_id = :org"  # noqa: S608 - constant fragments, bound values
+        + scope
+        + " AND (sides.ip <<= s.cidr OR sides.ip <<= ANY (s.extra_cidrs)) "
+        "ORDER BY s.created_at LIMIT 1)"
+    )
+
+
+async def registered_hosts(
+    session: AsyncSession, org_id: uuid.UUID, source_id: uuid.UUID | None = None
+) -> list[dict[str, Any]]:
+    """Single addresses the organisation registered (a source's own address, and the other addresses
+    its sensor reported). A range is not listed: its hosts appear once they have traffic."""
+    params: dict[str, Any] = {"org": org_id}
+    scope = ""
+    if source_id:
+        scope, params["source"] = " AND id = :source", source_id
+    rows = await session.execute(
+        text(
+            "SELECT id, name, cidr, extra_cidrs FROM sources "  # noqa: S608 - constant fragments, bound values
+            f"WHERE org_id = :org{scope} ORDER BY created_at"
+        ),
+        params,
+    )
+    found: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        for item in (r.cidr, *(r.extra_cidrs or ())):
+            net = ipaddress.ip_network(str(item), strict=False)
+            if net.num_addresses == 1:
+                found.setdefault(
+                    str(net.network_address), {"source_id": str(r.id), "source_name": r.name}
+                )
+    return [{"ip": ip, **owner} for ip, owner in found.items()]
+
+
 async def host_volumes(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -173,7 +212,11 @@ async def host_volumes(
     limit: int,
     now: datetime,
     source_id: uuid.UUID | None = None,
+    include_idle: bool = False,
 ) -> list[dict[str, Any]]:
+    """Sent/received per monitored address, biggest first. With ``include_idle`` the addresses the
+    organisation registered are listed too when they had no traffic in the window (all zeros, no
+    last_seen), so an address that has gone quiet is still there to open."""
     params: dict[str, Any] = {
         "org": org_id,
         "since": now - timedelta(minutes=minutes),
@@ -185,13 +228,15 @@ async def host_volumes(
         text(
             f"WITH sides AS ({_SIDES}) "  # noqa: S608 - constant fragments, bound values
             "SELECT host(ip) AS ip, sum(sent) AS sent, sum(received) AS received, "
-            "count(*) AS flows, max(ts) AS last_seen "
+            "count(*) AS flows, max(ts) AS last_seen, "
+            f"{_source_of('id', source_id)} AS source_id, "
+            f"{_source_of('name', source_id)} AS source_name "
             f"FROM sides WHERE {_monitored(source_id)} "
             "GROUP BY ip ORDER BY sum(sent) + sum(received) DESC LIMIT :limit"
         ),
         params,
     )
-    return [
+    hosts: list[dict[str, Any]] = [
         {
             "ip": r.ip,
             "sent_bytes": int(r.sent),
@@ -199,9 +244,31 @@ async def host_volumes(
             "total_bytes": int(r.sent) + int(r.received),
             "flows": int(r.flows),
             "last_seen": r.last_seen.isoformat(),
+            "source_id": str(r.source_id) if r.source_id else None,
+            "source_name": r.source_name,
         }
         for r in rows
     ]
+    # A full page may have cut active addresses off, so it cannot show who was idle: add nobody to
+    # it (the trim below would also drop them; this just skips a needless query).
+    if include_idle and len(hosts) < limit:
+        active = {h["ip"] for h in hosts}
+        for reg in await registered_hosts(session, org_id, source_id):
+            if reg["ip"] not in active:
+                hosts.append(
+                    {
+                        "ip": reg["ip"],
+                        "sent_bytes": 0,
+                        "received_bytes": 0,
+                        "total_bytes": 0,
+                        "flows": 0,
+                        "last_seen": None,
+                        "source_id": reg["source_id"],
+                        "source_name": reg["source_name"],
+                    }
+                )
+        hosts = hosts[:limit]
+    return hosts
 
 
 SERVICE_NAMES = {
@@ -224,12 +291,18 @@ def service_label(port: int | None, protocol: int | None) -> str:
 
 
 async def host_detail(
-    session: AsyncSession, org_id: uuid.UUID, ip: str, minutes: int, now: datetime
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    ip: str,
+    minutes: int,
+    now: datetime,
+    top: int = 10,
 ) -> dict[str, Any]:
-    """Everything about one address: totals, sent/received over time, top peers and services."""
+    """Everything about one address: totals, sent/received over time, and the ``top`` peers and
+    services, each with what the address sent and received."""
     step = bucket_minutes(minutes)
     since = now - timedelta(minutes=minutes)
-    params = {"org": org_id, "since": since, "ip": ip, "step": step}
+    params = {"org": org_id, "since": since, "ip": ip, "step": step, "top": top}
     me = "CAST(:ip AS inet)"
     involved = (
         f"org_id = :org AND ts >= :since AND (src_ip = {me} OR dst_ip = {me}) AND src_ip <> dst_ip"
@@ -260,21 +333,25 @@ async def host_detail(
     peers = await session.execute(
         text(
             f"SELECT host(CASE WHEN src_ip = {me} THEN dst_ip ELSE src_ip END) AS peer, "  # noqa: S608 - constant fragments, bound values
-            "sum(coalesce(in_bytes,0) + coalesce(out_bytes,0)) AS bytes, count(*) AS flows "
-            f"FROM flows WHERE {involved} GROUP BY 1 ORDER BY bytes DESC LIMIT 10"
+            f"sum({sent}) AS sent, sum({received}) AS received, count(*) AS flows "
+            f"FROM flows WHERE {involved} GROUP BY 1 "
+            "ORDER BY sum(coalesce(in_bytes,0) + coalesce(out_bytes,0)) DESC LIMIT :top"
         ),
         params,
     )
     services = await session.execute(
         text(
             "SELECT dst_port AS port, protocol, "  # noqa: S608 - constant fragments, bound values
-            "sum(coalesce(in_bytes,0) + coalesce(out_bytes,0)) AS bytes, count(*) AS flows "
-            f"FROM flows WHERE {involved} GROUP BY 1, 2 ORDER BY bytes DESC LIMIT 10"
+            f"sum({sent}) AS sent, sum({received}) AS received, count(*) AS flows "
+            f"FROM flows WHERE {involved} GROUP BY 1, 2 "
+            "ORDER BY sum(coalesce(in_bytes,0) + coalesce(out_bytes,0)) DESC LIMIT :top"
         ),
         params,
     )
     total_sent = sum(p["sent"] for p in points)
     total_received = sum(p["received"] for p in points)
+    n_flows = sum(p["flows"] for p in points)
+    last_seen = await _last_seen(session, org_id, ip, since if n_flows else None)
     return {
         "ip": ip,
         "minutes": minutes,
@@ -282,16 +359,47 @@ async def host_detail(
         "sent_bytes": total_sent,
         "received_bytes": total_received,
         "total_bytes": total_sent + total_received,
-        "flows": sum(p["flows"] for p in points),
+        "flows": n_flows,
+        # the latest flow in the window, or, when the window is empty, the latest ever seen: it lets
+        # the page say "nothing in the last 24 hours, but this address was active 2 days ago"
+        "last_seen": last_seen.isoformat() if last_seen else None,
         "points": points,
-        "peers": [{"ip": r.peer, "bytes": int(r.bytes), "flows": int(r.flows)} for r in peers],
+        "peers": [
+            {
+                "ip": r.peer,
+                "sent_bytes": int(r.sent),
+                "received_bytes": int(r.received),
+                "bytes": int(r.sent) + int(r.received),
+                "flows": int(r.flows),
+            }
+            for r in peers
+        ],
         "services": [
             {
                 "service": service_label(r.port, r.protocol),
                 "protocol": protocol_name(r.protocol),
-                "bytes": int(r.bytes),
+                "sent_bytes": int(r.sent),
+                "received_bytes": int(r.received),
+                "bytes": int(r.sent) + int(r.received),
                 "flows": int(r.flows),
             }
             for r in services
         ],
     }
+
+
+async def _last_seen(
+    session: AsyncSession, org_id: uuid.UUID, ip: str, since: datetime | None
+) -> datetime | None:
+    """Latest flow involving ``ip`` (inside the window when ``since`` is given, else ever)."""
+    me = "CAST(:ip AS inet)"
+    row = await session.execute(
+        text(
+            "SELECT max(ts) AS last FROM flows "  # noqa: S608 - constant fragments, bound values
+            f"WHERE org_id = :org AND (src_ip = {me} OR dst_ip = {me})"
+            + (" AND ts >= :since" if since else "")
+        ),
+        {"org": org_id, "ip": ip, **({"since": since} if since else {})},
+    )
+    last: datetime | None = row.scalar()
+    return last

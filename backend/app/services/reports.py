@@ -36,15 +36,84 @@ def _cell(value: Any) -> str:
 
 TRAFFIC_COLUMNS = ["ip", "sent_bytes", "received_bytes", "total_bytes", "flows", "last_seen"]
 
+# The data-volume report as tables. Every table says what the host sent and what it received, in
+# bytes as the network carried them (IP header included).
+TRAFFIC_SECTIONS: dict[str, list[str]] = {
+    "hosts": TRAFFIC_COLUMNS,
+    "peers": ["host", "peer", "sent_bytes", "received_bytes", "total_bytes", "flows"],
+    "services": [
+        "host",
+        "service",
+        "protocol",
+        "sent_bytes",
+        "received_bytes",
+        "total_bytes",
+        "flows",
+    ],
+    "timeline": ["host", "time", "sent_bytes", "received_bytes", "flows"],
+}
+
+
+def _table_csv(columns: list[str], rows: list[dict[str, Any]]) -> str:
+    buf = io.StringIO(newline="")
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([_cell(row.get(c)) for c in columns])
+    return buf.getvalue()
+
 
 def traffic_csv(hosts: list[dict[str, Any]]) -> str:
     """Data volume per monitored host (bytes as the network carried them, IP header included)."""
-    buf = io.StringIO(newline="")
-    writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(TRAFFIC_COLUMNS)
-    for h in hosts:
-        writer.writerow([_cell(h[c]) for c in TRAFFIC_COLUMNS])
-    return buf.getvalue()
+    return _table_csv(TRAFFIC_COLUMNS, hosts)
+
+
+def traffic_section_rows(section: str, details: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten per-host details (``analytics.host_detail``) into the rows of one report table."""
+    rows: list[dict[str, Any]] = []
+    for d in details:
+        host = d["ip"]
+        if section == "peers":
+            rows += [
+                {
+                    "host": host,
+                    "peer": p["ip"],
+                    "sent_bytes": p["sent_bytes"],
+                    "received_bytes": p["received_bytes"],
+                    "total_bytes": p["bytes"],
+                    "flows": p["flows"],
+                }
+                for p in d["peers"]
+            ]
+        elif section == "services":
+            rows += [
+                {
+                    "host": host,
+                    "service": s["service"],
+                    "protocol": s["protocol"],
+                    "sent_bytes": s["sent_bytes"],
+                    "received_bytes": s["received_bytes"],
+                    "total_bytes": s["bytes"],
+                    "flows": s["flows"],
+                }
+                for s in d["services"]
+            ]
+        elif section == "timeline":
+            rows += [
+                {
+                    "host": host,
+                    "time": p["t"],
+                    "sent_bytes": p["sent"],
+                    "received_bytes": p["received"],
+                    "flows": p["flows"],
+                }
+                for p in d["points"]
+            ]
+    return rows
+
+
+def traffic_section_csv(section: str, rows: list[dict[str, Any]]) -> str:
+    return _table_csv(TRAFFIC_SECTIONS[section], rows)
 
 
 def alerts_csv(alerts: list[Alert]) -> str:

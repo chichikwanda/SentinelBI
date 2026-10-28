@@ -32,16 +32,23 @@ async def traffic_hosts(
     minutes: Minutes = 1440,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     source_id: uuid.UUID | None = None,
+    include_idle: Annotated[
+        bool, Query(description="also list registered addresses with no traffic in the window")
+    ] = False,
 ) -> list[dict[str, Any]]:
     """Every monitored address (inside a registered source) with its sent/received bytes."""
     return await analytics.host_volumes(
-        session, principal.org_id, minutes, limit, datetime.now(UTC), source_id
+        session, principal.org_id, minutes, limit, datetime.now(UTC), source_id, include_idle
     )
 
 
 @router.get("/hosts/{ip}")
 async def traffic_host(
-    ip: str, principal: PrincipalDep, session: SessionDep, minutes: Minutes = 1440
+    ip: str,
+    principal: PrincipalDep,
+    session: SessionDep,
+    minutes: Minutes = 1440,
+    top: Annotated[int, Query(ge=1, le=100, description="peers and services to list")] = 10,
 ) -> dict[str, Any]:
     try:
         address = str(ipaddress.ip_address(ip.strip()))
@@ -50,5 +57,5 @@ async def traffic_host(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "not a valid IP address"
         ) from exc
     return await analytics.host_detail(
-        session, principal.org_id, address, minutes, datetime.now(UTC)
+        session, principal.org_id, address, minutes, datetime.now(UTC), top
     )
