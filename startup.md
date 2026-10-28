@@ -1,5 +1,8 @@
 # Starting SentinelBI
 
+Setting up on a machine that has only just cloned the project? Start with `setup.md`; this file is the
+day-to-day guide for a machine that is already set up.
+
 Everything runs in Docker. These steps are for Windows (PowerShell) from the project folder; there is no
 `make` on this machine, so the commands below are the plain equivalents of the Makefile targets. The
 shell scripts (`scripts/*.sh`) run in Git Bash or on any Linux VM.

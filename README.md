@@ -43,6 +43,9 @@ artifact SHA-256), because the development machine has faulty memory (ADR-024).
 
 ## Run it
 
+**On a new machine, follow [`setup.md`](setup.md)** (clone, settings, the trained model that git does not
+carry, start, check, sign in). The short version is below.
+
 Requires Docker with Compose v2. The ML workflow (`make train`) additionally needs `uv`.
 
 ```bash
