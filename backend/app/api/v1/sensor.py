@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response, status
 
@@ -10,8 +11,10 @@ from app.core.config import get_settings
 from app.core.deps import SessionDep, SourceDep
 from app.core.enums import SourceMethod
 from app.schemas.common import host_form
+from app.schemas.inventory import DiscoveryAccepted, DiscoveryReport, SensorPolicy
 from app.schemas.sources import MAX_EXTRA_CIDRS, SensorAddresses, SourceAddresses
 from app.services.ingestion.sensor_script import load_sensor_script
+from app.services.inventory import quarantined_targets, record_discovered
 
 router = APIRouter(prefix="/sensor", tags=["sensor"])
 
@@ -39,6 +42,41 @@ async def announce_addresses(
     )
 
 
+DISCOVER_INTERVAL_SECONDS = 300
+
+
+@router.get("/policy", response_model=SensorPolicy)
+async def policy(source: SourceDep, session: SessionDep) -> SensorPolicy:
+    """What this sensor should do. A source registered as a network (not one host) is discovered:
+    the sensor finds every device on it. The quarantine list is shown so it can be logged."""
+    net = ipaddress.ip_network(str(source.cidr), strict=False)
+    return SensorPolicy(
+        cidr=host_form(str(net)),
+        discover=net.num_addresses > 1,
+        discover_interval_seconds=DISCOVER_INTERVAL_SECONDS,
+        learning_until=source.baseline_until,
+        quarantined=await quarantined_targets(session, source.id),
+    )
+
+
+@router.put("/devices", response_model=DiscoveryAccepted)
+async def report_devices(
+    body: DiscoveryReport, source: SourceDep, session: SessionDep
+) -> DiscoveryAccepted:
+    """A sensor reports the devices it found on its network (address, MAC, name). Only addresses
+    inside the registered network are kept."""
+    if source.method != SourceMethod.SENSOR.value:
+        raise HTTPException(status.HTTP_409_CONFLICT, "only a sensor source can report devices")
+    stored = await record_discovered(
+        session,
+        source,
+        [(d.ip, d.mac, d.hostname) for d in body.devices],
+        settings=get_settings(),
+    )
+    await session.commit()
+    return DiscoveryAccepted(stored=stored)
+
+
 @router.get("/sentinelbi_sensor.py")
 async def sensor_script() -> Response:
     script = load_sensor_script(get_settings().sensor_script_path)
@@ -49,6 +87,24 @@ async def sensor_script() -> Response:
         media_type="text/x-python",
         headers={
             "Content-Disposition": 'attachment; filename="sentinelbi_sensor.py"',
+            "X-Content-SHA256": script.sha256,
+        },
+    )
+
+
+@router.get("/install-service.ps1")
+async def installer_script() -> Response:
+    """The Windows installer that runs the sensor in the background (kept next to the sensor)."""
+    script = load_sensor_script(
+        str(Path(get_settings().sensor_script_path).with_name("install-service.ps1"))
+    )
+    if script is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "the installer is not available here")
+    return Response(
+        content=script.content,
+        media_type="text/plain",
+        headers={
+            "Content-Disposition": 'attachment; filename="install-service.ps1"',
             "X-Content-SHA256": script.sha256,
         },
     )

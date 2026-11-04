@@ -31,6 +31,20 @@ class AlertStatus(StrEnum):
     RESOLVED = "resolved"
 
 
+class DeviceState(StrEnum):
+    KNOWN = "known"  # seen while the source was still learning its baseline
+    NEW = "new"  # appeared after the baseline: waits for a person's decision
+    TRUSTED = "trusted"  # a person approved it
+    QUARANTINED = "quarantined"  # flagged as suspicious: held for a decision
+
+
+class NetworkState(StrEnum):
+    BASELINE = "baseline"
+    NEW = "new"
+    APPROVED = "approved"
+    QUARANTINED = "quarantined"
+
+
 class Severity(StrEnum):
     LOW = "Low"
     MEDIUM = "Medium"

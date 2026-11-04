@@ -56,6 +56,8 @@ class Source(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Until this moment the source is learning what is normal; later arrivals are "new".
+    baseline_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Deviation from the plan (ADR-007): default criticality for assets in this source.
     criticality: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=2, server_default=text("2")

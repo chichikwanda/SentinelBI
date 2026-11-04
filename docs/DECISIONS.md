@@ -727,3 +727,97 @@ read.
 by name; the test now looks only inside the Sources table. With the machine's CPU throttled to a third of its speed the
 backend suite took 26 minutes instead of about 90 seconds, and Docker health checks briefly failed; neither was a code
 fault: the suite passed on its first run, only slowly. The browser suite was run with one worker for the same reason.
+
+## ADR-030: devices on a network, a learned baseline, quarantine as a held decision, and running without a terminal
+
+**Status:** built; tested on the author's Windows machine against its real network.
+
+**What was asked.** (1) Run without typing commands. (2) Enter a network and see every device on it. (3) Quarantine
+suspicious devices, networks and IPs and flag them for a decision. (4) Keep a record of the regular networks so new
+ones joining or talking to ours can be filtered.
+
+**Decisions.**
+- **Discovery is done by the sensor, on a network you registered (reverses part of ADR-006).** ADR-006 kept active
+  scanning off. The sensor now sends one 1-byte UDP datagram to the discard port of each address in the registered
+  network (up to 1,024, so a /22) to make the operating system resolve their MAC addresses, then reads its own ARP /
+  neighbour table (`arp -a`, `ip neigh`) and reverse-DNS names. It reads nothing back from the devices and uses no
+  port scan. A source registered as a single address is not discovered unless `--discover NETWORK` is given. IPv6
+  networks are not swept (too large); their devices appear from their traffic. The probes themselves are dropped from
+  the capture (UDP port 9) so they cannot look like a scan.
+- **Discovery only sees the sensor's own link.** It finds what answers on the layer-2 network the sensor sits on. A
+  device on another VLAN, or one that ignores ARP, is not listed until it shows up in traffic. Traffic from other
+  machines is captured only when the sensor runs on a gateway or mirror port (`--promiscuous`); otherwise the device
+  list is complete but the traffic is this machine's.
+- **Baseline.** Each source has `baseline_until` (default 7 days, `BASELINE_DAYS`). While learning, every device is
+  `known` and every peer network `baseline`. Afterwards a first-seen device or network is `new`, held for a decision.
+  A known device whose address answers from a different MAC is set back to `new` (the sign of spoofing or a swapped
+  device). Peer networks are a /24 (IPv4) or /48 (IPv6). Existing sources learn afresh for 7 days from the migration.
+- **Quarantine means flagged and held, not blocked.** A High or Critical alert (`QUARANTINE_MIN_SEVERITY`,
+  `AUTO_QUARANTINE`) marks the address it came from: a device inside the network, or the outside network plus the
+  flagged IP. People approve (release and trust) or quarantine from the Devices, Networks and Quarantine pages, and
+  the page writes the firewall commands (Windows, Linux host, Linux gateway) to copy. **The app never blocks traffic
+  itself**: it cannot know a gateway it does not control, and a wrong automatic block would cut off a legitimate
+  device. A person's decision wins: an alert only flags the address again if it began after that decision.
+- **Always on.** The containers already restart with Docker. `scripts/install-autostart.ps1` adds a sign-in task that
+  starts Docker Desktop if needed and runs `docker compose up -d`. `sensor/install-service.ps1` (served by the API,
+  and shown in the wizard) registers a SYSTEM scheduled task that starts the sensor at boot, restarts it after a
+  failure and keeps a size-limited log; the API key lives in a file only SYSTEM and Administrators can read. It is a
+  scheduled task and not a Windows service so that it needs nothing but Python and PowerShell.
+
+**Verified.** 8 backend tests for the inventory (discovery, baseline, new device, MAC change, new network,
+quarantine from outside and from inside, release not reversed by the same alert, tenant isolation, sensor policy)
+and 6 sensor tests; 341 of 342 backend tests pass, lint, format and mypy are clean, and the web image builds (which
+type-checks the new pages). The failing test (`test_prod_refuses_insecure_defaults`) reads `PLATFORM_ADMIN_EMAILS`
+from `.env` and fails the same way without these changes. A real run on the author's Wi-Fi network (192.168.122.0/24)
+discovered 2 devices (the gateway with its MAC, and the machine itself with its name) and recorded 35 peer networks.
+
+**Not verified, and limits.**
+- The two PowerShell scripts parse without errors but were **not run**: registering a scheduled task needs an
+  Administrator session, and that was not available. Run them once and check the log before relying on them.
+- No vendor names for MAC addresses (that needs an offline OUI list, not added). Only 2 devices were on the author's
+  network when tested, so discovery on a busy network, and the 1,024-host cap, are untested live.
+- Sensor-side enforcement, vendor names, paging, forgetting, and pseudonymised mode were added afterwards: see
+  "Follow-up" below.
+
+**Follow-up (same day): the gaps that were left open.**
+- **Vendor names.** `backend/app/data/oui.tsv.gz` is the IEEE OUI registry (39,891 vendor prefixes, 390 KB, taken
+  from the `oui-data` npm package, which republishes the IEEE list; the IEEE site itself refused an automated
+  download). A MAC whose "locally administered" bit is set is a phone or laptop using a random address and is shown as
+  "Randomised address", not guessed. Refresh by regenerating the file from a newer copy of the registry.
+- **Enforcement is opt-in.** `--enforce` (`-Enforce` on the installer) makes the sensor block, in this machine's own
+  firewall (`netsh advfirewall` on Windows, `iptables`/`ip6tables` on Linux), whatever the server holds in
+  quarantine, every 30 seconds, and release what a person released. It never blocks this machine's addresses, the
+  server it reports to, or its default gateway (the rule is refused and logged), and it changes nothing when the
+  server cannot be reached, so an outage never releases a block. Rules it makes are tagged (`SentinelBI quarantine`),
+  so it finds and removes its own after a restart. It protects that one machine only.
+- **Paging and forgetting.** The lists take `limit` (to 5,000) and `offset`; the pages have "Show more". An
+  administrator can **Forget** a device or network that is gone (refused while it is in quarantine).
+- **Pseudonymised mode.** With `PSEUDONYMIZE_IPS` on, flows store internal addresses as pseudonyms in 240.0.0.0/4 and
+  fd00::/8; those now count as inside the registered network, so an inside attacker is still quarantined as a
+  device. Discovery stores the pseudonymised address, no host name, and a MAC whose last three bytes are replaced by a
+  keyed hash (the vendor part is kept, it names no device). Outside networks stay real addresses.
+- **Checked.** 351 of 351 backend, collector, ML and sensor tests pass (the one that failed before read
+  `PLATFORM_ADMIN_EMAILS` from `.env`; it no longer does), lint, format and mypy are clean. A 1,024-device report is
+  stored whole in about 3 seconds and a 1,025-device one is refused. The installer's config and wrapper were run with
+  a stand-in sensor: arguments (including a key containing a quote and `--enforce`) arrive intact, stderr and the exit
+  code are captured, and the log is UTF-8 (the first version wrote UTF-16 and was fixed).
+- **Still not verified.** Registering the scheduled tasks (`install-service.ps1`, `install-autostart.ps1`) was not
+  done: it creates something that persists on the machine, and the session's safety check refused it. The enforcement
+  commands were tested against a fake firewall, not a real one. Discovery was tested live on a network of 2 devices
+  only; the 1,024 cap and the 8 second reverse-DNS budget are unexercised on a large one.
+
+**Follow-up 2: installing and running without a terminal.** A web page or a container cannot read this PC's packets or
+ARP table, so the sensor must run on the watched machine; the app now installs it instead of asking for commands.
+`POST /api/v1/sources/{id}/installer` (administrators) returns `SentinelBI-sensor-setup.cmd`: a batch header that asks
+Windows for administrator rights, then a PowerShell script that downloads the sensor and `install-service.ps1` from
+this server, **checks the sensor's SHA-256 against the value baked into the file**, finds or installs (winget) a
+system-wide Python, and registers the boot-time task. The key is stored only as a hash, so every download rotates the
+key (the response says so, and the dashboard asks for confirmation when a sensor is already reporting). The server
+rejects an address, key or network that is not a plain literal before it goes into the script. The stack restarts with
+Docker (restart: unless-stopped), which Docker Desktop starts at sign-in; the app cannot change that setting.
+Verified: the PowerShell part parses, runs against the live API with the final install and winget stubbed (download,
+checksum, Python search and arguments correct), and the batch's own extraction step returns the script. A test caught
+a real bug here (the batch searched for the first `#PS-BEGIN`, which also occurs in its own command line; it now uses
+the last). **Not verified:** the file was not run for real (it elevates and installs Python and a boot task, which the
+session may not do), so the Windows prompt, the winget install and the task registration are untested end to end;
+this PC has no all-users Python, so the winget path is the one that would run.

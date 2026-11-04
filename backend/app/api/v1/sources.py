@@ -15,7 +15,9 @@ from app.core.deps import AdminDep, PrincipalDep, SessionDep
 from app.core.enums import SourceMethod, SourceStatus
 from app.core.security import generate_api_key, hash_api_key
 from app.db.models import Asset, Source, flows
+from app.schemas.common import host_form
 from app.schemas.sources import (
+    InstallerOptions,
     SetupOut,
     SnippetOut,
     SourceCreate,
@@ -23,6 +25,8 @@ from app.schemas.sources import (
     SourceHealth,
     SourceOut,
 )
+from app.services.ingestion.installer import build_windows_installer
+from app.services.ingestion.sensor_script import load_sensor_script
 from app.services.ingestion.snippets import build_setup_info
 
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -49,6 +53,8 @@ async def create_source(body: SourceCreate, admin: AdminDep, session: SessionDep
         api_key_hash=hash_api_key(api_key),
         status=SourceStatus.PENDING.value,
         criticality=body.criticality,
+        # the first days teach the app what is normal here; later arrivals are "new"
+        baseline_until=datetime.now(UTC) + timedelta(days=get_settings().baseline_days),
     )
     session.add(source)
     await session.flush()
@@ -138,4 +144,38 @@ async def source_health(
         last_seen=source.last_seen,
         flows_total=total or 0,
         flows_last_minute=recent or 0,
+    )
+
+
+@router.post("/{source_id}/installer")
+async def download_installer(
+    source_id: uuid.UUID, body: InstallerOptions, admin: AdminDep, session: SessionDep
+) -> Response:
+    """A one-file Windows installer for this source's sensor: download it, double-click it, and the
+    sensor runs in the background and starts with Windows, with nothing typed in a terminal.
+
+    The file contains the source's API key. The key is shown only once, so each download makes a
+    NEW key (the old one stops working), which is why this can be fetched again at any time."""
+    source = await _get_scoped(session, admin.org_id, source_id)
+    if source.method != SourceMethod.SENSOR.value:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Only a sensor source has an installer")
+    settings = get_settings()
+    script = load_sensor_script(settings.sensor_script_path)
+    key = generate_api_key()
+    data = build_windows_installer(
+        api_url=settings.api_public_url,
+        api_key=key,
+        network=host_form(str(source.cidr)),
+        enforce=body.enforce,
+        sensor_sha256=script.sha256 if script else None,
+    )
+    source.api_key_hash = hash_api_key(key)
+    await session.commit()
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="SentinelBI-sensor-setup.cmd"',
+            "Cache-Control": "no-store",
+        },
     )

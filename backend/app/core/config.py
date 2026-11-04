@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     alert_window_seconds: int = 60
     alert_merge_seconds: int = 300
 
+    # Baseline and quarantine. A source learns which devices and networks are normal for this many
+    # days; after that, anything new waits for a decision. A High or Critical alert flags the
+    # address it came from and holds it for a decision (nothing on the network is blocked by us).
+    baseline_days: int = 7
+    auto_quarantine: bool = True
+    quarantine_min_severity: str = "High"
+
     # Models and risk
     models_dir: str = "/repo/ml/models"
     # the sensor script handed out to users; mounted read-only into the API container

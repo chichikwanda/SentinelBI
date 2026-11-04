@@ -35,6 +35,7 @@ from app.services.alerting import (
 )
 from app.services.features.builder import records_to_frame, serving_features
 from app.services.inference.predictor import Predictor, classify
+from app.services.inventory import load_sources, observe_flows, quarantine_for_alert
 from app.services.prescriptive.service import sync_recommendations
 from app.services.privacy import pseudonymize_ip
 from sentinelbi_ml.features import BENIGN
@@ -196,6 +197,11 @@ async def _persist_and_alert(
         )
 
     source_ids = {p.source_id for p in parsed}
+    infos = await load_sources(session, source_ids, pseudonymized=settings.pseudonymize_ips)
+    with _timed(stages, "inventory"):
+        await observe_flows(
+            session, [r for r in flow_rows if r["flow_ref"] in new_refs], infos, now=now
+        )
     crit_rows = await session.execute(
         select(Source.id, Source.criticality).where(Source.id.in_(source_ids))
     )
@@ -243,6 +249,9 @@ async def _persist_and_alert(
                 top_features=top,
             )
             await sync_recommendations(session, alert)
+            info = infos.get(group.source_id)
+            if info is not None:
+                await quarantine_for_alert(session, alert, info, settings, now=now)
             touched += 1
     stages["alerts"] = stages.get("alerts", 0.0) + (time.perf_counter() - alert_started) * 1000
     return len(new_refs), touched

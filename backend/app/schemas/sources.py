@@ -49,6 +49,7 @@ class SourceOut(BaseModel):
     criticality: int
     last_seen: datetime | None
     created_at: datetime
+    baseline_until: datetime | None = None
 
 
 MAX_ANNOUNCED_ADDRESSES = 32  # per request
@@ -109,3 +110,10 @@ class SourceHealth(BaseModel):
     last_seen: datetime | None
     flows_total: int
     flows_last_minute: int
+
+
+class InstallerOptions(BaseModel):
+    enforce: bool = Field(
+        default=False,
+        description="Also block quarantined addresses in the watched PC's own firewall.",
+    )

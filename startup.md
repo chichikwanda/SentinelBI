@@ -153,6 +153,53 @@ or router using it stops reporting; the flows and alerts already stored are kept
 the source), and the source's address range is no longer a monitored host range, so the Traffic page stops
 listing those hosts.
 
+## 5c. Devices, networks and quarantine
+
+Register a **network** (for example `192.168.1.0/24`) with method sensor and run its sensor. Without any extra
+option the sensor then finds every device on that network every 5 minutes (it needs to be on that network), and the
+**Devices** page lists them with address, name, MAC and when they were last seen. **Networks** lists who talks to it,
+grouped as /24 networks. **Quarantine** holds what was flagged.
+
+- For the first 7 days (`BASELINE_DAYS`) everything seen is the *baseline*: devices are **Known**, networks
+  **Regular**. After that a device or network seen for the first time is **New** until you click **Approve** or
+  **Quarantine**. The dashboard shows a strip with how many are waiting.
+- A High or Critical alert moves the address it came from to **Quarantine**. Nothing on your network is blocked
+  automatically: **Release** a false alarm, or open "Show block commands" and run them on the PC or the gateway.
+- Filtering "new" is done with the New button on Devices and Networks. Devices show the card's vendor (a random
+  privacy MAC says so). **Forget** removes a device or network that is gone; lists show 500 at a time (**Show more**).
+- To have the sensor also **block** quarantined addresses on the PC it runs on, add `--enforce` (or `-Enforce` to
+  the background installer). It needs Administrator, never blocks this PC, the server or the gateway, and is off
+  by default; otherwise copy the commands from the Quarantine page yourself.
+
+## 5d. Make it live without a terminal (Windows)
+
+**From the app (no commands):** Add source (method sensor), then **Download installer (Windows)**, or later the same
+button on the dashboard's Sources table. Open the downloaded `SentinelBI-sensor-setup.cmd` on the PC to watch and
+choose Yes when Windows asks. It installs Python for all users with winget if missing, runs the sensor in the
+background, starts it with Windows and restarts it if it stops; the source turns green when data arrives. Each
+download makes a **new key** (only a hash is stored), so a sensor already running with the old key stops until the
+new installer is run. The file contains the key: do not share it. The stack itself comes back by itself when Docker
+Desktop starts (the containers use `restart: unless-stopped`); keep Docker Desktop, Settings, General, "Start Docker
+Desktop when you sign in" ticked. Npcap (for IPv6) cannot be installed for you (its licence forbids it); the
+installer says so and links to it.
+
+The commands below are the manual alternative.
+
+```powershell
+# the stack: starts Docker Desktop if needed and runs docker compose up -d every time you sign in
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
+```
+
+```powershell
+# the sensor: in an ADMINISTRATOR PowerShell; Python must be installed for ALL users, Npcap recommended.
+# Add source > "Run in the background (Windows)" prints this with your key filled in.
+powershell -ExecutionPolicy Bypass -File sensor\install-service.ps1 -ApiUrl http://127.0.0.1:8000 -ApiKey sbi_... -Ip 192.168.1.0/24
+```
+
+The sensor starts with Windows and restarts itself; its log is `C:\ProgramData\SentinelBI\sensor.log`. Remove them
+with `install-autostart.ps1 -Remove` and `install-service.ps1 -Remove`. Also tick Docker Desktop, Settings, General,
+"Start Docker Desktop when you sign in". These scripts were checked for syntax only, not run: see ADR-030.
+
 ## 6. Train a model (only when none exists)
 
 Needs `uv` and about 650 MB of dataset downloads on the first run. The training script checks every dataset file

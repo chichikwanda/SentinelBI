@@ -170,6 +170,8 @@ class Matcher:
         self._inside.cache_clear()  # answers cached before the change may be wrong now
 
     def wanted(self, p: Packet) -> bool:
+        if p.proto == UDP and DISCOVERY_PORT in (p.sport, p.dport):
+            return False  # our own device-discovery probes (see poke), not the network's traffic
         if (p.src, p.sport) in self.excluded or (p.dst, p.dport) in self.excluded:
             return False
         if not self.networks:
@@ -803,6 +805,7 @@ class Exporter:
         self.pending: collections.deque = collections.deque(maxlen=max_pending)
         self.sent = self.dropped = self.duplicates = 0
         self.addresses_url = self.url.rsplit("/ingest/flows", 1)[0] + "/sensor/addresses"
+        self.api_base = self.url.rsplit("/ingest/flows", 1)[0]
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="exporter", daemon=True)
@@ -915,6 +918,31 @@ class Exporter:
                 return False
         return False
 
+    def call(self, method: str, path: str, body: Optional[dict] = None) -> Optional[Any]:
+        """One small request to the server (discovery and policy). Returns the decoded answer, or
+        None when the server could not be reached or refused it; never raises."""
+        req = urllib.request.Request(  # noqa: S310 - the scheme is checked in __init__
+            self.api_base + path,
+            data=None if body is None else json.dumps(body).encode(),
+            method=method,
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": self.key,
+                "User-Agent": f"sentinelbi-sensor/{VERSION}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - same URL
+                return json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                log(f"the server rejected the API key (HTTP {exc.code}); check --api-key")
+            elif exc.code not in (404, 405):  # 404/405: an older server without this feature
+                log(f"{method} {path}: server answered HTTP {exc.code}")
+            return None
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
+
     def flush_once(self) -> bool:
         with self._lock:
             batch = [self.pending.popleft() for _ in range(min(self.batch, len(self.pending)))]
@@ -943,6 +971,393 @@ class Exporter:
         deadline = time.time() + drain_seconds
         while self.pending and time.time() < deadline and self.flush_once():
             pass
+
+
+# --------------------------------------------------------------------------------------------
+# Finding the devices on a network
+# --------------------------------------------------------------------------------------------
+DISCOVERY_PORT = 9  # the UDP "discard" port: what discovery probes are sent to
+MAX_SWEEP = 1024  # hosts probed per sweep: a /22. A bigger network is cut off, with a warning
+_MAC_RE: Any = None
+
+
+def _mac_pattern() -> Any:
+    global _MAC_RE
+    if _MAC_RE is None:
+        import re
+
+        _MAC_RE = re.compile(r"\b([0-9a-fA-F]{2}(?:[-:][0-9a-fA-F]{2}){5})\b")
+    return _MAC_RE
+
+
+def parse_neighbours(text: str) -> Dict[str, str]:
+    """Read an ARP table printed by `arp -a`, `arp -an` or `ip neigh` into {ip: mac}. Lines without
+    a usable address pair (incomplete entries, broadcast, multicast) are skipped."""
+    found: Dict[str, str] = {}
+    for line in text.splitlines():
+        mac = _mac_pattern().search(line)
+        if not mac:
+            continue
+        addr = mac.group(1).lower().replace("-", ":")
+        if addr in ("ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00") or addr.startswith(
+            ("01:00:5e", "33:33")
+        ):
+            continue
+        for token in line.replace("(", " ").replace(")", " ").split():
+            try:
+                ip = ipaddress.ip_address(token.split("%", 1)[0])
+            except ValueError:
+                continue
+            if not (ip.is_multicast or ip.is_unspecified):
+                found[str(ip)] = addr
+            break
+    return found
+
+
+def read_neighbours() -> Dict[str, str]:
+    """This machine's ARP / neighbour table: every address it has recently exchanged frames with."""
+    import subprocess
+
+    commands: List[List[str]] = (
+        [["arp", "-a"]] if os.name == "nt" else [["ip", "neigh"], ["arp", "-an"]]
+    )
+    for command in commands:
+        try:
+            done = subprocess.run(  # noqa: S603 - fixed commands, no user input
+                command, capture_output=True, text=True, timeout=15, check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        found = parse_neighbours(done.stdout)
+        if found:
+            return found
+    return {}
+
+
+def sweep_hosts(network: Any) -> List[str]:
+    if network.version != 4:
+        return []  # an IPv6 network is too large to sweep; its devices are found through traffic
+    return [str(h) for h in network.hosts()][:MAX_SWEEP]
+
+
+def poke(hosts: List[str], wait: float = 2.0) -> None:
+    """Send one tiny UDP datagram to every host so the operating system resolves its hardware
+    address (ARP) and puts it in the neighbour table. The datagram is one zero byte to the discard
+    port; nothing is read back. A machine that is off, or not on this link, stays silent."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setblocking(False)
+        for host in hosts:
+            with contextlib.suppress(OSError):
+                sock.sendto(b"\0", (host, 9))
+    finally:
+        sock.close()
+    time.sleep(wait)  # let the ARP replies arrive
+
+
+def reverse_names(addresses: List[str], budget: float = 8.0) -> Dict[str, str]:
+    """Best-effort host names (reverse DNS), looked up in parallel and cut off after ``budget``."""
+    names: Dict[str, str] = {}
+    lock = threading.Lock()
+
+    def look(ip: str) -> None:
+        try:
+            name = socket.gethostbyaddr(ip)[0]
+        except (OSError, UnicodeError):
+            return
+        with lock:
+            names[ip] = name
+
+    pending = [threading.Thread(target=look, args=(ip,), daemon=True) for ip in addresses[:256]]
+    for t in pending:
+        t.start()
+    deadline = time.time() + budget
+    for t in pending:
+        t.join(timeout=max(0.0, deadline - time.time()))
+    with lock:
+        return dict(names)
+
+
+def _in_network(ip: str, network: Any) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.version == network.version and addr in network and not addr.is_multicast
+
+
+def _ip_sort(ip: str) -> Tuple[int, int]:
+    addr = ipaddress.ip_address(ip)
+    return (addr.version, int(addr))
+
+
+def discover(network: Any, own: List[str]) -> List[dict]:
+    """Every device that answers on ``network``: {ip, mac, hostname}. ``own`` are this machine's
+    own addresses (they never appear in its own neighbour table)."""
+    hosts = sweep_hosts(network)
+    if hosts:
+        poke(hosts)
+    table = {ip: mac for ip, mac in read_neighbours().items() if _in_network(ip, network)}
+    addresses = sorted({*table, *[a for a in own if _in_network(a, network)]}, key=_ip_sort)
+    names = reverse_names(addresses)
+    return [{"ip": ip, "mac": table.get(ip), "hostname": names.get(ip)} for ip in addresses]
+
+
+class DiscoveryLoop:
+    """Every few minutes: ask the server what to do, find the devices on the network, report them."""
+
+    def __init__(
+        self,
+        exporter: Exporter,
+        stop: threading.Event,
+        network: Optional[str],
+        interval: Optional[float],
+        own: Callable[[], List[str]],
+    ) -> None:
+        self.exporter, self.stop, self.forced = exporter, stop, network
+        self.interval, self.own = interval, own
+        self.held: Set[str] = set()
+        self.reported = 0
+        self.thread = threading.Thread(target=self.run, name="discovery", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            if self.stop.wait(self.once()):
+                return
+
+    def once(self) -> float:
+        """One round. Returns the seconds to wait before the next one."""
+        policy = self.exporter.call("GET", "/sensor/policy") or {}
+        every = float(self.interval or policy.get("discover_interval_seconds") or 300)
+        target = self.forced or (policy.get("cidr") if policy.get("discover") else None)
+        self._note_quarantine(policy.get("quarantined") or [])
+        if not target:
+            return every if policy else 60.0  # no policy yet (server unreachable): try again soon
+        try:
+            network = ipaddress.ip_network(target, strict=False)
+        except ValueError:
+            log(f"discovery: {target!r} is not a network")
+            return every
+        if network.version == 4 and network.num_addresses - 2 > MAX_SWEEP:
+            log(
+                f"discovery: {network} has more than {MAX_SWEEP} hosts; only the first "
+                f"{MAX_SWEEP} are probed. Register a smaller network for full coverage."
+            )
+        found = discover(network, self.own())
+        if not found:
+            log(f"discovery: no devices answered on {network}")
+        elif self.exporter.call("PUT", "/sensor/devices", {"devices": found}) is not None:
+            self.reported = len(found)
+            log(f"discovery: {len(found)} device(s) on {network} reported to the server")
+        return every
+
+    def _note_quarantine(self, targets: List[str]) -> None:
+        now = set(targets)
+        for item in sorted(now - self.held):
+            log(
+                f"QUARANTINE: the server flagged {item} as suspicious and is holding it for a "
+                "decision (see the Quarantine page). Nothing is blocked automatically."
+            )
+        self.held = now
+
+
+def local_addresses() -> List[str]:
+    """This machine's own addresses (best effort, standard library only)."""
+    found: Set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(str(info[4][0]))
+    except OSError:
+        pass
+    with contextlib.suppress(Exception):
+        found.add(default_local_ip())
+    return sorted(a for a in found if not a.startswith("127."))
+
+
+# --------------------------------------------------------------------------------------------
+# Enforcing the quarantine on this machine (only with --enforce)
+# --------------------------------------------------------------------------------------------
+FIREWALL_PREFIX = (
+    "SentinelBI quarantine"  # Windows rule name; Linux uses SentinelBI-quarantine:<net>
+)
+LINUX_TAG = "SentinelBI-quarantine"
+
+
+def default_gateway() -> Optional[str]:
+    """This machine's default gateway (best effort): blocking it would cut the machine off."""
+    import subprocess
+
+    command = (
+        ["route", "print", "-4", "0.0.0.0"]  # noqa: S104 - the default route, not a bind
+        if os.name == "nt"
+        else ["ip", "route", "show", "default"]
+    )
+    try:
+        done = subprocess.run(  # noqa: S603 - fixed command
+            command, capture_output=True, text=True, timeout=15, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in done.stdout.splitlines():
+        parts = line.split()
+        if os.name == "nt":
+            if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":  # noqa: S104
+                return parts[2]
+        elif "via" in parts:
+            return parts[parts.index("via") + 1]
+    return None
+
+
+def protected_addresses(api_url: str, own: List[str], gateway: Optional[str]) -> List[str]:
+    """Addresses the sensor must never block: itself, the server it reports to, its gateway."""
+    from urllib.parse import urlparse
+
+    found: Set[str] = set(own)
+    if gateway:
+        found.add(gateway)
+    host = urlparse(api_url).hostname
+    if host:
+        with contextlib.suppress(OSError):
+            found.update(str(i[4][0]) for i in socket.getaddrinfo(host, None))
+    return sorted(found)
+
+
+class Enforcer:
+    """Adds a firewall block for each target the server holds in quarantine, and removes the
+    ones it no longer holds. Windows: netsh advfirewall. Linux: iptables / ip6tables.
+
+    Safety: it never blocks an address in ``protected`` (this machine, the server it reports to,
+    its gateway), and it changes nothing when the server cannot be asked."""
+
+    def __init__(self, protected: List[str], run: Optional[Callable[..., Any]] = None) -> None:
+        import subprocess
+
+        self.protected = [ipaddress.ip_address(a) for a in protected]
+        self._run = run or (
+            lambda cmd: subprocess.run(  # noqa: S603 - argument lists only, targets are validated
+                cmd, capture_output=True, text=True, timeout=30, check=False
+            )
+        )
+        self.windows = os.name == "nt"
+        self.applied: Set[str] = set()
+        self.refused: Set[str] = set()
+
+    @staticmethod
+    def _net(target: str) -> Optional[Any]:
+        try:
+            return ipaddress.ip_network(target, strict=False)
+        except ValueError:
+            return None
+
+    def _is_protected(self, net: Any) -> bool:
+        return any(a.version == net.version and a in net for a in self.protected)
+
+    # -- one rule at a time ------------------------------------------------------------------
+    def _commands(self, net: Any, add: bool) -> List[List[str]]:
+        t = str(net.network_address) if net.num_addresses == 1 else str(net)
+        if self.windows:
+            name = f"{FIREWALL_PREFIX} {t}"
+            if not add:
+                return [["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"]]
+            return [
+                [
+                    "netsh",
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    f"name={name}",
+                    f"dir={d}",
+                    "action=block",
+                    f"remoteip={t}",
+                ]
+                for d in ("in", "out")
+            ]
+        tool = "iptables" if net.version == 4 else "ip6tables"
+        tag = f"{LINUX_TAG}:{t}"
+        flag = "-I" if add else "-D"
+        return [
+            [tool, flag, "INPUT", "-s", t, "-m", "comment", "--comment", tag, "-j", "DROP"],
+            [tool, flag, "OUTPUT", "-d", t, "-m", "comment", "--comment", tag, "-j", "DROP"],
+        ]
+
+    def present(self) -> Set[str]:
+        """Targets this sensor already blocks (rules it created in an earlier run)."""
+        found: Set[str] = set()
+        if self.windows:
+            out = self._run(["netsh", "advfirewall", "firewall", "show", "rule", "name=all"]).stdout
+            for line in out.splitlines():
+                if line.strip().startswith("Rule Name:") and FIREWALL_PREFIX in line:
+                    found.add(line.split(FIREWALL_PREFIX, 1)[1].strip())
+        else:
+            for tool in ("iptables", "ip6tables"):
+                try:
+                    out = self._run([tool, "-S"]).stdout
+                except (OSError, AttributeError):
+                    continue
+                for line in out.splitlines():
+                    if LINUX_TAG + ":" in line:
+                        found.add(line.split(LINUX_TAG + ":", 1)[1].split()[0].strip('"'))
+        return {t for t in found if self._net(t) is not None}
+
+    def sync(self, targets: List[str]) -> None:
+        wanted: Dict[str, Any] = {}
+        for target in targets:
+            net = self._net(target)
+            if net is None:
+                continue
+            key = str(net.network_address) if net.num_addresses == 1 else str(net)
+            if self._is_protected(net):
+                if key not in self.refused:
+                    self.refused.add(key)
+                    log(
+                        f"enforce: NOT blocking {key}: it contains this machine, the server or its gateway"
+                    )
+                continue
+            wanted[key] = net
+        current = self.present() | self.applied
+        for key, net in wanted.items():
+            if key in current:
+                continue
+            if all(self._run(c).returncode == 0 for c in self._commands(net, add=True)):
+                self.applied.add(key)
+                log(f"enforce: blocked {key} on this machine (quarantine)")
+            else:
+                log(f"enforce: could not block {key} (is this an Administrator / root terminal?)")
+        for key in sorted(current - set(wanted)):
+            net = self._net(key)
+            if net is None:
+                continue
+            for command in self._commands(net, add=False):
+                self._run(command)
+            self.applied.discard(key)
+            log(f"enforce: released {key}")
+
+
+class EnforceLoop:
+    """Every 30 seconds: fetch what the server holds, and bring the firewall in line."""
+
+    def __init__(self, exporter: Exporter, stop: threading.Event, enforcer: Enforcer) -> None:
+        self.exporter, self.stop, self.enforcer = exporter, stop, enforcer
+        self.thread = threading.Thread(target=self.run, name="enforce", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            self.once()
+            if self.stop.wait(30.0):
+                return
+
+    def once(self) -> None:
+        policy = self.exporter.call("GET", "/sensor/policy")
+        if not isinstance(policy, dict) or "quarantined" not in policy:
+            return  # the server could not be asked: change nothing
+        self.enforcer.sync([str(t) for t in policy["quarantined"]])
 
 
 def log(message: str) -> None:
@@ -1414,6 +1829,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=30.0,
         help="seconds between status lines (default 30)",
     )
+    p.add_argument(
+        "--discover",
+        nargs="?",
+        const="auto",
+        metavar="NETWORK",
+        help="find every device on a network and report it. A source registered as a network does "
+        "this by itself; give NETWORK (for example 192.168.1.0/24) to choose one, or nothing to "
+        "use the registered network",
+    )
+    p.add_argument(
+        "--enforce",
+        action="store_true",
+        help="also BLOCK, in this machine's firewall, what the server holds in quarantine (needs "
+        "Administrator / root). Never blocks this machine, the server or the gateway. Off by default",
+    )
+    p.add_argument(
+        "--no-discover", action="store_true", help="never look for devices, only capture traffic"
+    )
+    p.add_argument(
+        "--discover-interval",
+        type=float,
+        help="seconds between device discovery rounds (default: the server's, 300)",
+    )
     p.add_argument("--version", action="version", version=f"sentinelbi-sensor {VERSION}")
     return p
 
@@ -1492,6 +1930,13 @@ def run(args: argparse.Namespace) -> int:
     if exporter:
         exporter.start()
     stop = threading.Event()
+    if exporter and not offline and not args.no_discover:
+        forced = None if args.discover in (None, "auto") else args.discover
+        DiscoveryLoop(exporter, stop, forced, args.discover_interval, local_addresses).start()
+    if exporter and not offline and args.enforce:
+        guard = protected_addresses(args.api_url, local_addresses(), default_gateway())
+        log("enforce: quarantined addresses will be blocked in this machine's firewall")
+        EnforceLoop(exporter, stop, Enforcer(guard)).start()
     if not offline:
         signal.signal(signal.SIGINT, lambda *_: stop.set())
         if hasattr(signal, "SIGTERM"):

@@ -249,7 +249,13 @@ async def test_registering_a_sensor_source_returns_real_commands(
     assert body["cidr"] == "10.181.2.111"  # a single host is shown without "/32", as when read back
     snippets = {s["id"]: s["content"] for s in body["setup"]["snippets"]}
     assert snippets["sensor-linux"].rstrip().endswith("--ip 10.181.2.111")
-    assert set(snippets) == {"sensor-windows", "sensor-linux", "sensor-docker", "sensor-demo"}
+    assert set(snippets) == {
+        "sensor-windows",
+        "sensor-service",
+        "sensor-linux",
+        "sensor-docker",
+        "sensor-demo",
+    }
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     for name, text in snippets.items():
         assert (body["api_key"] in text and "10.181.2.111" in text) or name == "sensor-demo"

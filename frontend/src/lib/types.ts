@@ -31,6 +31,8 @@ export interface Source {
   criticality: number;
   last_seen: string | null;
   created_at: string;
+  /** The source is still learning what is normal until this moment. */
+  baseline_until?: string | null;
 }
 
 export interface Snippet {
@@ -265,4 +267,55 @@ export interface EvalSummary {
     means: Record<string, number> | null;
     cronbach_alpha: Record<string, number | null>;
   };
+}
+
+// ---- devices, peer networks, quarantine -------------------------------------------------
+
+export type DeviceState = "known" | "new" | "trusted" | "quarantined";
+export type NetworkState = "baseline" | "new" | "approved" | "quarantined";
+
+interface Tracked {
+  id: string;
+  source_id: string;
+  first_seen: string;
+  last_seen: string;
+  state_reason: string | null;
+  state_changed_at: string;
+  /** "system", or the email of the person who decided */
+  state_by: string;
+  alert_id: string | null;
+}
+export interface Device extends Tracked {
+  ip: string;
+  mac: string | null;
+  hostname: string | null;
+  /** Who made the network card (from the MAC); "Randomised address" for a privacy MAC. */
+  vendor: string | null;
+  state: DeviceState;
+}
+export interface PeerNetwork extends Tracked {
+  network: string;
+  flows: number;
+  bytes: number;
+  flagged_ips: string[];
+  state: NetworkState;
+}
+export interface InventorySummary {
+  devices_total: number;
+  devices_new: number;
+  devices_quarantined: number;
+  networks_total: number;
+  networks_new: number;
+  networks_quarantined: number;
+}
+export interface QuarantineItem {
+  kind: "device" | "network";
+  id: string;
+  source_id: string;
+  target: string;
+  flagged_ips: string[];
+  reason: string | null;
+  since: string;
+  alert_id: string | null;
+  commands: { windows: string[]; linux: string[]; gateway: string[] };
 }

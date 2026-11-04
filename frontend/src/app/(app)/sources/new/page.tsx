@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
 import { api } from "@/lib/client-api";
 import type { SourceCreated, SourceHealth, SourceMethod } from "@/lib/types";
+import { InstallerButton } from "@/components/installer-button";
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -193,6 +194,17 @@ function Instructions({ source }: { source: SourceCreated }) {
             (UDP). The collector only accepts exports from the registered address{" "}
             <code className="font-mono">{source.cidr}</code>; anything else is dropped.
           </p>
+        )}
+        {isSensor && windows && (
+          <div className="space-y-2 rounded-lg border border-emerald-600/30 bg-emerald-500/5 p-4" data-testid="installer-box">
+            <div className="font-medium">Easiest: no commands</div>
+            <p className="text-sm">
+              Download the installer and open it on the PC you entered. Windows asks for permission once; it sets
+              up Python if needed and runs the sensor in the background, starting with Windows. You can
+              download it again later from the Sources table on the dashboard.
+            </p>
+            <InstallerButton sourceId={source.id} sourceName={source.name} />
+          </div>
         )}
         {isSensor && (
           <div className="space-y-2 text-sm" data-testid="sensor-notes">

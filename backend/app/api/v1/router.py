@@ -9,6 +9,7 @@ from app.api.v1 import (
     auth,
     evaluation,
     ingest,
+    inventory,
     models,
     overview,
     recommendations,
@@ -34,6 +35,7 @@ for module in (
     evaluation,
     reports,
     traffic,
+    inventory,
     sensor,
 ):
     api_router.include_router(module.router)

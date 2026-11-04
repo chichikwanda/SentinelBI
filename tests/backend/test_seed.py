@@ -99,6 +99,7 @@ def test_prod_refuses_insecure_defaults() -> None:
         "env": "prod",
         "secret_key": "dev-only-change-me-use-openssl-rand-hex-32",
         "seed_demo_data": False,  # do not inherit SEED_DEMO_DATA from the container env
+        "platform_admin_emails": "",  # nor the dev default admin from .env, which prod refuses
         "pseudonym_key": "k" * 32,
     }
     with pytest.raises(ValueError, match="SECRET_KEY"):

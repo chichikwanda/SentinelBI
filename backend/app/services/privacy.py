@@ -46,3 +46,14 @@ def pseudonymize_ip(ip: str, org_id: uuid.UUID, key: bytes) -> str:
         value = (int.from_bytes(digest[:4], "big") & 0x0FFFFFFF) | 0xF0000000
         return str(ipaddress.IPv4Address(value))
     return str(ipaddress.IPv6Address(b"\xfd" + digest[:15]))
+
+
+def pseudonymize_mac(mac: str, org_id: uuid.UUID, key: bytes) -> str:
+    """Keep the vendor part (the first three bytes name a manufacturer, not a device) and replace
+    the device part with a keyed, per-organisation hash. The same card always maps to the same
+    pseudonym, so a changed MAC is still noticed."""
+    digits = "".join(c for c in mac.lower() if c in "0123456789abcdef")
+    digest = hmac.new(key + org_id.bytes, bytes.fromhex(digits), hashlib.sha256).digest()
+    tail = digest[:3].hex()
+    full = digits[:6] + tail
+    return ":".join(full[i : i + 2] for i in range(0, 12, 2))

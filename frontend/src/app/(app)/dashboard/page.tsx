@@ -8,6 +8,8 @@ import { BarList, type BarItem } from "@/components/charts/bar-list";
 import { RiskGauge } from "@/components/charts/risk-gauge";
 import { TrafficChart } from "@/components/charts/traffic-chart";
 import { HealthPill } from "@/components/health-pill";
+import { AttentionBanner } from "@/components/inventory";
+import { InstallerButton } from "@/components/installer-button";
 import { SeverityBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -261,6 +263,16 @@ function SourceRow({
       </Td>
       {onRemove && (
         <Td className="text-right">
+          {source.method === ("sensor" as Source["method"]) && (
+            <div className="mb-1">
+              <InstallerButton
+                sourceId={source.id}
+                sourceName={source.name}
+                running={health?.state === "receiving"}
+                size="sm"
+              />
+            </div>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -377,6 +389,7 @@ export default function DashboardPage() {
   return (
     <>
       {noSources && <QuickStart />}
+      <AttentionBanner />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardContent>

@@ -131,6 +131,18 @@ def _sensor_snippets(api: str, key: str, cidr: str, settings: Settings) -> list[
             f"python sentinelbi_sensor.py {run}",
         ),
         Snippet(
+            "sensor-service",
+            "Run in the background (Windows)",
+            "shell",
+            "# Run ONCE in an ADMINISTRATOR PowerShell. The sensor then starts with Windows and restarts\n"
+            "# itself: no terminal to keep open. Needs Python 3.9+ installed for ALL users.\n"
+            f"Invoke-WebRequest -UseBasicParsing {url} -OutFile sentinelbi_sensor.py\n"
+            f"Invoke-WebRequest -UseBasicParsing {api}/api/v1/sensor/install-service.ps1 "
+            "-OutFile install-service.ps1\n"
+            "powershell -ExecutionPolicy Bypass -File .\\install-service.ps1 "
+            f"-ApiUrl {api} -ApiKey {key} -Ip {cidr}",
+        ),
+        Snippet(
             "sensor-linux",
             "Linux",
             "shell",
