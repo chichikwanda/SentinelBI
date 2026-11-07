@@ -821,3 +821,43 @@ a real bug here (the batch searched for the first `#PS-BEGIN`, which also occurs
 the last). **Not verified:** the file was not run for real (it elevates and installs Python and a boot task, which the
 session may not do), so the Windows prompt, the winget install and the task registration are untested end to end;
 this PC has no all-users Python, so the winget path is the one that would run.
+
+
+## ADR-031: administration from the web interface (settings, training, rules, backups, assessment)
+
+**Why.** Everything an administrator needed (thresholds, retention, training a model, backups) required `.env`
+edits or `make`/`docker compose` commands. The dissertation describes a system used by people who are not
+developers, so these became pages under **Settings** (admin/platform-admin only) and a new **Assessment** page.
+
+**Settings.** `app_settings` (key, JSON value, who, when) overrides the environment default for a fixed catalogue
+of keys (`services/runtime_settings.py`), each with a type and range checked on every write. Secrets are not in
+the catalogue. The API and the worker read the effective value (`effective_settings`); the worker refreshes every
+10 s, so no restart is needed. Retention changes the TimescaleDB policy of `flows` and `predictions`.
+"Platform administrator" is still `PLATFORM_ADMIN_EMAILS`, plus emails added in Settings > Access.
+
+**Training and backups.** The API only queues a row in `training_jobs`; a separate `trainer` service (backend
+image, 8 GB memory cap, the only writer of `ml/models`, `data/raw` and `backups/`) runs one job at a time as a
+subprocess of the same code as `make train` (`sentinelbi_ml.train`, `.download`) or of `services/backup.py`, streams
+its output into the job log, and registers the exported model (never activates it). The selection rule (best
+validation macro-F1) and the single look at the test split are unchanged and not configurable. Added to the
+trainer: an MLP (`mlp`) and optional stratified k-fold CV on the training rows (`--cv-folds`). "Check backup"
+restores into a scratch database and drops it; restoring over the live database stays `scripts/restore.sh` with
+`FORCE=1`, deliberately outside the web interface. xgboost was added to the backend image for this (its image
+grew; it pulls NVIDIA NCCL wheels on x86-64 Linux).
+
+**Self-assessment and rules.** 18 items (14 practice, 4 governance) in `assessment_data/items.yaml`; maturity per
+control area = weighted share of the answered items (High >= 80%, Medium >= 50%, else Low; unanswered areas are
+"Not assessed", never guessed). Fifteen rules (`rules/maturity.yaml`) add a `weak_area` + `max_level` condition
+to the alert-driven rule schema; a Low area raises priority by one step; five are `profile_only` and need no alert
+(`recommendations.alert_id` is now nullable, unique per (org, rec_key) when null). Answering re-runs the rules
+for the organisation's open alerts. Rule edits (switch off; text, priority, effort of actions) are stored in
+`app_settings` and applied over the YAML; classes, conditions and references cannot be edited. The CIS and NIST ids
+used by the new rules are added to the mapping files and remain marked unverified. The dissertation's
+"Infiltration" maps to Botnet/Backdoor; DoS and DDoS to DoS/DDoS.
+
+**Latency evidence.** The worker records, per message, the time between the Redis stream id (queue time) and
+storage; Settings > System health shows median and 95th percentile of the last 1,000 flows. The dashboard polls
+every 5 s on top of this.
+
+**Not done.** Per-organisation settings (all settings are platform-wide), restoring a backup over the live database
+from the browser, hyper-parameter search, SHAP (boosted-tree contributions only), TLS (put a reverse proxy in front).

@@ -66,6 +66,10 @@ class Settings(BaseSettings):
 
     # Models and risk
     models_dir: str = "/repo/ml/models"
+    # datasets live in <data_dir>/raw (the trainer writes them, the API only looks)
+    data_dir: str = "/repo/data"
+    # backups made from the web interface (the trainer writes them, the API lists them)
+    backups_dir: str = "/repo/backups"
     # the sensor script handed out to users; mounted read-only into the API container
     sensor_script_path: str = "/repo/sensor/sentinelbi_sensor.py"
     model_refresh_seconds: int = 30

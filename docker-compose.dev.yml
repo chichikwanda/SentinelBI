@@ -6,6 +6,12 @@ services:
     volumes:
       - ./backend:/repo/backend
       - ./ml:/repo/ml
+  trainer:
+    volumes:
+      - ./backend:/repo/backend
+      - ./ml:/repo/ml
+      - ./data:/repo/data
+      - ./backups:/repo/backups
   worker:
     volumes:
       - ./backend:/repo/backend

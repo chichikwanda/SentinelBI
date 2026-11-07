@@ -20,10 +20,12 @@ from app.db.session import get_sessionmaker
 from app.services.inference.predictor import Predictor
 from app.services.inference.registry import PredictorHolder
 from app.services.risk.aggregate import active_org_ids, snapshot_org
+from app.services.runtime_settings import effective_settings
 from app.workers.pipeline import Message, process_messages
 
 log = logging.getLogger("worker")
 _RECLAIM_EVERY_S = 15.0
+_SETTINGS_EVERY_S = 10.0  # how soon a change made in the web interface reaches the worker
 
 
 async def ensure_group(redis: Redis, settings: Settings) -> None:
@@ -141,9 +143,14 @@ async def main() -> None:
     log.info("worker %s started, model=%s", consumer, holder.predictor.version)
     last_reclaim = 0.0
     last_snapshot = 0.0
+    last_settings = time.monotonic()
     while True:
         beat()
         try:
+            if time.monotonic() - last_settings > _SETTINGS_EVERY_S:
+                last_settings = time.monotonic()
+                async with sessionmaker() as session:
+                    settings = await effective_settings(session)
             await holder.refresh(sessionmaker)
             await consume_once(redis, sessionmaker, holder.predictor, settings, consumer)
             if time.monotonic() - last_reclaim > _RECLAIM_EVERY_S:

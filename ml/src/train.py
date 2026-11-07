@@ -9,8 +9,8 @@ TEST split once, for the selected model only. With two or more datasets it also 
 selected algorithm does on a dataset it was NOT trained on (leave-one-dataset-out), which is the
 check that speaks to dataset shift.
 
-Deliberately NOT done here (deferred, see docs/DECISIONS.md): k-fold cross-validation,
-hyper-parameter search, significance tests, an MLP. Nothing in the output is invented: every
+Optional (off by default): k-fold cross-validation (--cv-folds) and an MLP (--models ...,mlp).
+Deliberately NOT done here (deferred, see docs/DECISIONS.md): hyper-parameter search, significance tests. Nothing in the output is invented: every
 number comes from this run and is written to ``metrics.json`` / ``model_card.json`` next to the
 exported artifact.
 """
@@ -49,7 +49,7 @@ from sentinelbi_ml.preprocess import (
     verify_sha256,
 )
 
-ALL_MODELS = ["lr", "dt", "rf", "lgbm", "xgb"]
+ALL_MODELS = ["lr", "dt", "rf", "lgbm", "xgb", "mlp"]
 DEFAULT_MODELS = ["dt", "rf", "lgbm"]
 # the large dataset is read in chunks keeping EVERY attack row and only a share of benign rows
 DEFAULT_BENIGN_KEEP = {"nf-cse-cic-ids2018-v2": 0.08}
@@ -67,6 +67,28 @@ def make_model(key: str, seed: int, n_jobs: int) -> Any:
                 ("log1p", FunctionTransformer(np.log1p, validate=False)),
                 ("scale", StandardScaler()),
                 ("clf", LogisticRegression(max_iter=300, class_weight="balanced")),
+            ]
+        )
+    if key == "mlp":
+        from sklearn.neural_network import MLPClassifier
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import FunctionTransformer, StandardScaler
+
+        # a small multi-layer perceptron: log1p + standardise (fit on train only), two hidden
+        # layers, early stopping on a held-out part of the TRAIN rows. It has no class weights.
+        return Pipeline(
+            [
+                ("log1p", FunctionTransformer(np.log1p, validate=False)),
+                ("scale", StandardScaler()),
+                (
+                    "clf",
+                    MLPClassifier(
+                        hidden_layer_sizes=(128, 64),
+                        early_stopping=True,
+                        max_iter=60,
+                        random_state=seed,
+                    ),
+                ),
             ]
         )
     if key == "dt":
@@ -122,6 +144,33 @@ def fit(key: str, model: Any, x: pd.DataFrame, y: np.ndarray) -> float:
     else:
         model.fit(x, y)
     return time.perf_counter() - started
+
+
+def cross_validate(
+    key: str, x: pd.DataFrame, y: np.ndarray, folds: int, seed: int, n_jobs: int
+) -> dict[str, float]:
+    """Stratified k-fold macro-F1 on the TRAINING rows only (validation and test are untouched)."""
+    from sklearn.metrics import f1_score
+    from sklearn.model_selection import StratifiedKFold
+
+    # a class with fewer rows than folds cannot be stratified: use as many folds as it allows
+    smallest = int(np.bincount(y).min()) if len(y) else 0
+    k = max(2, min(folds, smallest)) if smallest >= 2 else 0
+    if k < 2:
+        return {}
+    scores = []
+    for fold, (a, b) in enumerate(
+        StratifiedKFold(n_splits=k, shuffle=True, random_state=seed).split(x, y), 1
+    ):
+        model = make_model(key, seed, n_jobs)
+        fit(key, model, x.iloc[a], y[a])
+        scores.append(float(f1_score(y[b], model.predict(x.iloc[b]), average="macro")))
+        log(f"    cv {key} fold {fold}/{k}: macro-F1={scores[-1]:.4f}")
+    return {
+        "cv_folds": k,
+        "cv_f1_macro_mean": float(np.mean(scores)),
+        "cv_f1_macro_std": float(np.std(scores)),
+    }
 
 
 def log(msg: str) -> None:
@@ -302,6 +351,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--target-far", type=float, default=0.02, help="false-alarm target for the alert threshold"
     )
+    ap.add_argument(
+        "--cv-folds",
+        type=int,
+        default=0,
+        help="stratified k-fold cross-validation on the training rows (0 = off; costs k x training)",
+    )
     ap.add_argument("--no-cross-dataset", action="store_true")
     ap.add_argument("--no-export", action="store_true", help="evaluate only; write nothing")
     ap.add_argument("--smoke", action="store_true", help="quick pipeline check (NOT valid results)")
@@ -323,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
         seconds = fit(key, model, x_tr, y_tr)
         m = evaluate(y_va, model.predict_proba(x_va), classes)
         m["train_seconds"] = round(seconds, 1)
+        if args.cv_folds > 1:
+            m.update(cross_validate(key, x_tr, y_tr, args.cv_folds, args.seed, args.n_jobs))
         results[key], fitted[key] = m, model
         log(
             f"  {key}: val macro-F1={m['f1_macro']:.4f} acc={m['accuracy']:.4f} "
@@ -410,12 +467,17 @@ def main(argv: list[str] | None = None) -> int:
             "splits": {"train": len(tr), "validation": len(va), "test": len(te)},
             "selection": "validation macro-F1",
             "models_compared": sorted(results),
+            "cv_folds": args.cv_folds if args.cv_folds > 1 else None,
             "not_done": [
-                "k-fold cross-validation",
-                "hyper-parameter search",
-                "statistical significance tests",
-                "MLP",
-                "evaluation on real SME traffic",
+                n
+                for n in (
+                    None if args.cv_folds > 1 else "k-fold cross-validation",
+                    "hyper-parameter search",
+                    "statistical significance tests",
+                    None if "mlp" in results else "MLP",
+                    "evaluation on real SME traffic",
+                )
+                if n
             ],
         },
         test_rows={k: p.meta["row"].to_numpy()[te][ds_arr[te] == k] for k in keys},

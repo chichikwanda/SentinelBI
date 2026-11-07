@@ -1,0 +1,126 @@
+# Threat-by-maturity rules (R01 to R15 of the dissertation). A rule fires when the organisation's
+# self-assessed maturity of `weak_area` is at or below `max_level`, and EITHER a detected threat of
+# the rule's attack class has raised an alert (alert-driven rules), OR the rule is `profile_only`
+# and needs no alert (it applies whatever threats were seen). A Low area raises the priority of an
+# alert-driven rule by one step. The attack classes are the seven of the project taxonomy: the
+# dissertation's Infiltration maps to Botnet/Backdoor (persistence), DoS and DDoS to DoS/DDoS.
+# CIS and NIST ids are unverified until reviewed (see mappings/*.yaml).
+- id: RULE-MAT-001
+  when: {attack_class: BruteForce, weak_area: Access control, max_level: Medium}
+  recommend:
+    - action: "Enforce multi-factor authentication on remote and administrator access and apply account lockout after repeated failed logins"
+      priority: 1
+      effort: medium
+      refs: {cis: ["5.2", "6.4"], nist: ["PR.AA"]}
+
+- id: RULE-MAT-002
+  when: {attack_class: BruteForce, weak_area: Network security, max_level: Medium}
+  recommend:
+    - action: "Disable or restrict exposed FTP and SSH services and limit them to known addresses"
+      priority: 2
+      effort: low
+      refs: {cis: ["4.4", "4.8"], nist: ["PR.IR"]}
+
+- id: RULE-MAT-003
+  when: {attack_class: WebAttack, weak_area: Patching and vulnerabilities, max_level: Medium}
+  recommend:
+    - action: "Patch web applications and frameworks and commission a web application vulnerability test"
+      priority: 1
+      effort: medium
+      refs: {cis: ["7.4"], nist: ["ID.RA"]}
+
+- id: RULE-MAT-004
+  when: {attack_class: WebAttack, weak_area: Network security, max_level: Low}
+  recommend:
+    - action: "Place public web applications behind a web application firewall"
+      priority: 2
+      effort: medium
+      refs: {cis: ["13.4"], nist: ["PR.IR"]}
+
+- id: RULE-MAT-005
+  when: {attack_class: DoS/DDoS, weak_area: Incident response, max_level: Medium}
+  recommend:
+    - action: "Agree denial-of-service mitigation with your upstream provider and prepare an incident contact list"
+      priority: 1
+      effort: low
+      refs: {cis: ["17.3", "17.4"], nist: ["RS.MA"]}
+
+- id: RULE-MAT-006
+  when: {attack_class: DoS/DDoS, weak_area: Incident response, max_level: Medium}
+  recommend:
+    - action: "Ask your upstream provider which filtering they apply to flood (DDoS) traffic and how to request it during an attack"
+      priority: 2
+      effort: low
+      refs: {cis: ["17.4"], nist: ["RS.MA"]}
+
+- id: RULE-MAT-007
+  when: {attack_class: Recon/Scan, weak_area: Network security, max_level: Medium}
+  recommend:
+    - action: "Review firewall rules and close ports and services that are not needed"
+      priority: 2
+      effort: low
+      refs: {cis: ["4.4", "4.8"], nist: ["PR.IR"]}
+
+- id: RULE-MAT-008
+  when: {attack_class: Botnet/Backdoor, weak_area: Endpoint and malware, max_level: Medium}
+  recommend:
+    - action: "Scan and clean infected devices and keep endpoint protection active and updated"
+      priority: 1
+      effort: medium
+      refs: {cis: ["10.1"], nist: ["PR.PS"]}
+
+- id: RULE-MAT-009
+  when: {attack_class: Botnet/Backdoor, weak_area: Remote access, max_level: Medium}
+  recommend:
+    - action: "Audit installed remote-access tools and remove any that are not approved"
+      priority: 2
+      effort: low
+      refs: {cis: ["2.5"], nist: ["PR.PS"]}
+
+- id: RULE-MAT-010
+  when: {attack_class: Botnet/Backdoor, weak_area: Logging and monitoring, max_level: Medium}
+  recommend:
+    - action: "Collect and review security logs from servers and key endpoints weekly"
+      priority: 2
+      effort: medium
+      refs: {cis: ["8.2", "8.11"], nist: ["DE.CM"]}
+
+- id: RULE-MAT-011
+  when: {attack_class: "*", weak_area: Email security, max_level: Low, profile_only: true}
+  recommend:
+    - action: "Introduce email filtering for phishing and malicious attachments"
+      priority: 2
+      effort: medium
+      refs: {cis: ["9.7"], nist: ["PR.PS"]}
+
+- id: RULE-MAT-012
+  when: {attack_class: "*", weak_area: Awareness, max_level: Low, profile_only: true}
+  recommend:
+    - action: "Run phishing-awareness training for all staff and repeat it yearly"
+      priority: 2
+      effort: low
+      refs: {cis: ["14.1"], nist: ["PR.AT"]}
+
+- id: RULE-MAT-013
+  when: {attack_class: "*", weak_area: Backup and recovery, max_level: Medium, profile_only: true}
+  recommend:
+    - action: "Keep offline or immutable backups and test restoration to limit ransomware impact"
+      priority: 1
+      effort: medium
+      refs: {cis: ["11.3", "11.5"], nist: ["RC.RP"]}
+
+- id: RULE-MAT-014
+  when: {attack_class: "*", weak_area: Access control, max_level: Low, profile_only: true}
+  recommend:
+    - action: "Remove access promptly when staff, interns or contractors leave and review accounts quarterly"
+      priority: 2
+      effort: low
+      refs: {cis: ["6.2"], nist: ["PR.AA"]}
+
+- id: RULE-MAT-015
+  when: {attack_class: "*", weak_area: Patching and vulnerabilities, max_level: Low, profile_only: true}
+  recommend:
+    - action: "Apply operating system and application patches within 30 days"
+      priority: 2
+      effort: medium
+      refs: {cis: ["7.3", "7.4"], nist: ["ID.RA"]}

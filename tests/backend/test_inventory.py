@@ -207,3 +207,19 @@ async def test_decisions_and_lists_are_private_to_the_organisation(
         headers=other.headers,
     )
     assert resp.status_code == 404
+
+
+async def test_a_second_attacking_host_is_added_to_a_held_network(
+    client: httpx.AsyncClient, redis: Redis, sessionmaker: Any, settings: Settings
+) -> None:
+    """Regression: the stored addresses came back as address objects and the new one was a string,
+    which the database refused, so the batch failed and its messages were dead-lettered."""
+    tenant = await sensor_network(client)
+    await ingest(client, tenant, flood_flows(6))
+    await drain(redis, sessionmaker, settings)
+    await ingest(client, tenant, flood_flows(6, src="198.51.100.78"))
+    await drain(redis, sessionmaker, settings)
+
+    (item,) = await get(client, tenant, "inventory/quarantine")
+    assert item["flagged_ips"] == ["198.51.100.77", "198.51.100.78"]
+    assert await redis.xlen(settings.stream_dead) == 0

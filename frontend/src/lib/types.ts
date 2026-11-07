@@ -139,7 +139,7 @@ export interface Reference {
 export type RecStatus = "open" | "in_progress" | "done" | "dismissed";
 export interface Recommendation {
   id: string;
-  alert_id: string;
+  alert_id: string | null;
   rule_id: string;
   action: string;
   priority: number;
@@ -148,13 +148,14 @@ export interface Recommendation {
   rank: number;
   compliance_note: string | null;
   references: Reference[];
+  /** null: the action comes from the self-assessment alone, not from an alert */
   alert: {
     id: string;
     attack_class: string;
     severity: Severity;
     src_ip: string | null;
     last_seen: string;
-  };
+  } | null;
 }
 
 export interface AssetRisk {
@@ -318,4 +319,115 @@ export interface QuarantineItem {
   since: string;
   alert_id: string | null;
   commands: { windows: string[]; linux: string[]; gateway: string[] };
+}
+
+// --- settings ------------------------------------------------------------------------------
+export interface SettingItem {
+  key: string;
+  group: string;
+  label: string;
+  help: string;
+  kind: "int" | "float" | "bool" | "choice" | "emails";
+  min: number | null;
+  max: number | null;
+  choices: string[];
+  unit: string;
+  default: string | number | boolean;
+  value: string | number | boolean;
+  overridden: boolean;
+}
+export interface SettingsResponse {
+  can_edit: boolean;
+  items: SettingItem[];
+}
+export interface SystemHealth {
+  checked_at: string;
+  database: { ok: boolean; error?: string };
+  schema_version?: string;
+  active_model?: string | null;
+  retention_days?: number;
+  queue: {
+    ok: boolean;
+    error?: string;
+    waiting?: number;
+    dead_letters?: number;
+    workers?: { name: string; idle_seconds: number; pending: number }[];
+  };
+  pipeline_lag?: { samples: number; median_ms?: number; p95_ms?: number; max_ms?: number };
+}
+export interface UserRow {
+  id: string;
+  email: string;
+  role: "admin" | "analyst" | "viewer";
+}
+
+// --- training ------------------------------------------------------------------------------
+export interface TrainingOptions {
+  algorithms: { key: string; label: string; available: boolean; default: boolean; note: string }[];
+  datasets: { key: string; ready: boolean; bytes: number; citation: string; source: string }[];
+  defaults: Record<string, unknown>;
+  busy: boolean;
+}
+export interface TrainingJob {
+  id: string;
+  kind: "train" | "download" | "backup" | "check";
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  stage: string | null;
+  params: Record<string, unknown>;
+  result_version: string | null;
+  error: string | null;
+  created_by: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+export interface TrainingJobDetail extends TrainingJob {
+  log: string;
+}
+
+// --- self-assessment -----------------------------------------------------------------------
+export type Maturity = "Low" | "Medium" | "High" | "Not assessed";
+export interface AssessmentItem {
+  id: string;
+  area: string;
+  question: string;
+  source: string;
+  weight: number;
+  answer: number | null;
+}
+export interface AssessmentResponse {
+  can_edit: boolean;
+  items: AssessmentItem[];
+  maturity: Record<string, { percent: number | null; level: Maturity; items: number; answered: number }>;
+  governance: { id: string; question: string; source: string; status: string }[];
+  disclaimer: string;
+}
+
+// --- rules and backups ---------------------------------------------------------------------
+export interface RuleRow {
+  id: string;
+  attack_class: string | string[];
+  min_severity: string;
+  weak_area: string | null;
+  max_level: string | null;
+  profile_only: boolean;
+  ports: number[] | null;
+  enabled: boolean;
+  changed: boolean;
+  actions: {
+    action: string;
+    priority: number;
+    effort: string;
+    default: { action: string; priority: number; effort: string };
+    refs: { framework: string; id: string; title: string | null }[];
+  }[];
+}
+export interface RulesResponse {
+  can_edit: boolean;
+  rules: RuleRow[];
+}
+export interface BackupRow {
+  name: string;
+  bytes: number;
+  has_models: boolean;
 }

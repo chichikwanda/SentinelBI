@@ -21,10 +21,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.enums import AlertStatus
 from app.db.models import Alert, Asset, RiskSnapshot, Source
 from app.services.risk.scoring import severity_for
+from app.services.runtime_settings import effective_settings
 
 WINDOW_HOURS = 24
 _OPEN = (AlertStatus.NEW.value, AlertStatus.ACKNOWLEDGED.value)
@@ -61,7 +61,7 @@ def decay_factor(age_hours: float, half_life_hours: float) -> float:
 
 
 async def compute_org_risk(session: AsyncSession, org_id: uuid.UUID, now: datetime) -> OrgRisk:
-    half_life = get_settings().risk_decay_half_life_hours
+    half_life = (await effective_settings(session)).risk_decay_half_life_hours
     since = now - timedelta(hours=WINDOW_HOURS)
 
     assets = (await session.execute(select(Asset).where(Asset.org_id == org_id))).scalars().all()

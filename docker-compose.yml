@@ -19,6 +19,8 @@ x-backend-env: &backend-env
   ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
   PLATFORM_ADMIN_EMAILS: ${PLATFORM_ADMIN_EMAILS:-}
   MODELS_DIR: /repo/ml/models
+  DATA_DIR: /repo/data
+  BACKUPS_DIR: /repo/backups
   WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-2000}
   LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-8}
   LOGIN_LOCKOUT_SECONDS: ${LOGIN_LOCKOUT_SECONDS:-900}
@@ -95,6 +97,8 @@ services:
     volumes:
       - ./ml/models:/repo/ml/models:ro
       - ./sensor:/repo/sensor:ro  # the sensor script users download from the wizard
+      - ./data:/repo/data:ro  # which datasets are downloaded (Settings > Training)
+      - ./backups:/repo/backups:ro  # which backups exist (Settings > Backups)
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -126,6 +130,29 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.core.heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Runs dataset downloads and model training queued from Settings > Training. The only service that
+  # may write ml/models and data/raw. Training is memory-hungry: it is capped so it cannot starve the stack.
+  trainer:
+    build: *backend-build
+    command: ["python", "-m", "app.workers.trainer"]
+    environment: *backend-env
+    mem_limit: ${TRAINER_MEMORY:-8g}
+    volumes:
+      - ./ml/models:/repo/ml/models
+      - ./data:/repo/data
+      - ./backups:/repo/backups
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-m", "app.core.heartbeat"]
       interval: 10s

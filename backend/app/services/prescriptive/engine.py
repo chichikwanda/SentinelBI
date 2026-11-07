@@ -13,14 +13,14 @@ highest-ranked one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.core.enums import Severity
 
@@ -62,6 +62,17 @@ class When(BaseModel):
     min_severity: Severity = Severity.LOW
     min_criticality: int = Field(default=1, ge=1, le=3)
     dst_port_in: list[int] | None = None  # match only if the alert touched one of these ports
+    # Threat-by-maturity: fire only when the organisation's self-assessed maturity of this control
+    # area is at or below ``max_level``. ``profile_only`` rules need no alert at all.
+    weak_area: str | None = None
+    max_level: Literal["Low", "Medium"] = "Medium"
+    profile_only: bool = False
+
+    @model_validator(mode="after")
+    def _profile_needs_an_area(self) -> When:
+        if self.profile_only and not self.weak_area:
+            raise ValueError("a profile_only rule needs a weak_area")
+        return self
 
 
 class Rule(BaseModel):
@@ -80,6 +91,8 @@ class AlertContext:
     severity: str
     criticality: int = 2  # 1 low .. 3 high
     dst_ports: frozenset[int] = field(default_factory=frozenset)
+    # control area -> Low / Medium / High from the self-assessment (unassessed areas are absent)
+    maturity: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -131,14 +144,58 @@ def _matches(rule: Rule, ctx: AlertContext) -> bool:
         return False
     if ctx.criticality < w.min_criticality:
         return False
-    return not (w.dst_port_in is not None and not (set(w.dst_port_in) & ctx.dst_ports))
+    if w.dst_port_in is not None and not (set(w.dst_port_in) & ctx.dst_ports):
+        return False
+    return _area_is_weak(rule, ctx.maturity)
+
+
+LEVEL_ORDER = {"Low": 0, "Medium": 1, "High": 2}
+
+
+def _area_is_weak(rule: Rule, maturity: Mapping[str, str]) -> bool:
+    w = rule.when
+    if not w.weak_area:
+        return True
+    level = maturity.get(w.weak_area)
+    return level is not None and LEVEL_ORDER[level] <= LEVEL_ORDER[w.max_level]
 
 
 def recommend(ctx: AlertContext, rules: Iterable[Rule] | None = None) -> list[Recommendation]:
     """Return the ranked, de-duplicated recommendations for one alert."""
     best: dict[str, Recommendation] = {}
     for rule in rules if rules is not None else default_rules():
-        if not _matches(rule, ctx):
+        if rule.when.profile_only or not _matches(rule, ctx):
+            continue
+        # a Low control area meeting a detected threat is more urgent: one step up
+        bump = 1 if rule.when.weak_area and ctx.maturity.get(rule.when.weak_area) == "Low" else 0
+        for idx, act in enumerate(rule.recommend):
+            priority = max(1, act.priority - bump)
+            rec = Recommendation(
+                rule_id=rule.id,
+                rec_key=f"{rule.id}:{idx}",
+                action=act.action,
+                priority=priority,
+                effort=act.effort,
+                refs=act.refs.model_dump(),
+                compliance_note=rule.compliance_note,
+                rank=rank_score(priority, ctx.severity, ctx.criticality),
+            )
+            key = " ".join(act.action.lower().split())
+            if key not in best or rec.rank > best[key].rank:
+                best[key] = rec
+    return sorted(best.values(), key=lambda r: (-r.rank, r.priority, r.rec_key))
+
+
+PROFILE_SEVERITY = "Medium"
+
+
+def recommend_from_profile(
+    maturity: Mapping[str, str], rules: Iterable[Rule] | None = None
+) -> list[Recommendation]:
+    """Recommendations that follow from weak control areas alone (``profile_only`` rules)."""
+    out: dict[str, Recommendation] = {}
+    for rule in rules if rules is not None else default_rules():
+        if not rule.when.profile_only or not _area_is_weak(rule, maturity):
             continue
         for idx, act in enumerate(rule.recommend):
             rec = Recommendation(
@@ -149,12 +206,10 @@ def recommend(ctx: AlertContext, rules: Iterable[Rule] | None = None) -> list[Re
                 effort=act.effort,
                 refs=act.refs.model_dump(),
                 compliance_note=rule.compliance_note,
-                rank=rank_score(act.priority, ctx.severity, ctx.criticality),
+                rank=rank_score(act.priority, PROFILE_SEVERITY, 2),
             )
-            key = " ".join(act.action.lower().split())
-            if key not in best or rec.rank > best[key].rank:
-                best[key] = rec
-    return sorted(best.values(), key=lambda r: (-r.rank, r.priority, r.rec_key))
+            out[rec.rec_key] = rec
+    return sorted(out.values(), key=lambda r: (-r.rank, r.priority, r.rec_key))
 
 
 # --- reference mappings (id -> title/url), for display and validation ---------------------

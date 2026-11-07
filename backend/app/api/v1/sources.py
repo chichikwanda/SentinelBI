@@ -28,6 +28,7 @@ from app.schemas.sources import (
 from app.services.ingestion.installer import build_windows_installer
 from app.services.ingestion.sensor_script import load_sensor_script
 from app.services.ingestion.snippets import build_setup_info
+from app.services.runtime_settings import effective_settings
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -54,7 +55,8 @@ async def create_source(body: SourceCreate, admin: AdminDep, session: SessionDep
         status=SourceStatus.PENDING.value,
         criticality=body.criticality,
         # the first days teach the app what is normal here; later arrivals are "new"
-        baseline_until=datetime.now(UTC) + timedelta(days=get_settings().baseline_days),
+        baseline_until=datetime.now(UTC)
+        + timedelta(days=(await effective_settings(session)).baseline_days),
     )
     session.add(source)
     await session.flush()

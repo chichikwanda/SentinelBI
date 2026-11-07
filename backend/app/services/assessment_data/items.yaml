@@ -1,0 +1,24 @@
+# The self-assessment: 14 security-practice items grouped into control areas, and 4 governance items.
+# Each answer is 0 (No), 1 (Partly) or 2 (Yes). `weight` (1 or 2) says how much the item counts toward
+# its area: 2 for the safeguards that most reduce harm (MFA, endpoint protection, patching, backups,
+# incident response). Sources: CIS Controls v8 (Implementation Group 1), NIST CSF 2.0, and for the
+# governance items the Cyber and Data Protection Act [Chapter 12:07] and SI 155 of 2024.
+items:
+  - {id: AC1, area: Access control, weight: 2, question: "Is multi-factor authentication required for all remote access?", source: "CIS 6.4; NIST CSF PR.AA"}
+  - {id: AC2, area: Access control, weight: 2, question: "Is multi-factor authentication required for administrator accounts?", source: "CIS 6.5; NIST CSF PR.AA"}
+  - {id: AC3, area: Access control, weight: 1, question: "Does every user have a unique account with a strong password?", source: "CIS 5.2; NIST CSF PR.AA"}
+  - {id: AC4, area: Access control, weight: 1, question: "Is access removed promptly when staff, interns or contractors leave?", source: "CIS 6.2; NIST CSF PR.AA"}
+  - {id: RA1, area: Remote access, weight: 1, question: "Are remote-access tools approved centrally and unapproved ones blocked?", source: "CIS 2.5; NIST CSF PR.PS"}
+  - {id: EP1, area: Endpoint and malware, weight: 2, question: "Is anti-malware or endpoint protection installed and updated on all devices?", source: "CIS 10.1; NIST CSF PR.PS"}
+  - {id: PM1, area: Patching and vulnerabilities, weight: 2, question: "Are operating systems and applications patched within 30 days?", source: "CIS 7.3; CIS 7.4; NIST CSF ID.RA"}
+  - {id: PM2, area: Patching and vulnerabilities, weight: 1, question: "Are public web applications tested for vulnerabilities at least yearly?", source: "CIS 16; NIST CSF ID.RA"}
+  - {id: NW1, area: Network security, weight: 1, question: "Is the firewall configured to deny unused services and ports?", source: "CIS 4.4; NIST CSF PR.IR"}
+  - {id: EM1, area: Email security, weight: 1, question: "Is incoming email filtered for phishing and malicious attachments?", source: "CIS 9.2; NIST CSF PR.PS"}
+  - {id: AW1, area: Awareness, weight: 1, question: "Do staff receive security awareness training at least once a year?", source: "CIS 14.1; NIST CSF PR.AT"}
+  - {id: BK1, area: Backup and recovery, weight: 2, question: "Are backups kept offline or immutable and tested for restoration?", source: "CIS 11.2; CIS 11.5; NIST CSF RC.RP"}
+  - {id: IR1, area: Incident response, weight: 2, question: "Is there a documented incident response plan with named contacts?", source: "CIS 17.1; NIST CSF RS.MA"}
+  - {id: LG1, area: Logging and monitoring, weight: 1, question: "Are security logs collected and reviewed regularly?", source: "CIS 8.2; NIST CSF DE.CM"}
+  - {id: GV1, area: Governance, weight: 1, question: "Is the organisation licensed as a data controller with POTRAZ?", source: "SI 155 of 2024"}
+  - {id: GV2, area: Governance, weight: 1, question: "Has a Data Protection Officer been appointed?", source: "SI 155 of 2024"}
+  - {id: GV3, area: Governance, weight: 1, question: "Is there a procedure to notify the Authority of breaches within 24 hours?", source: "CDPA s.19; SI 155 of 2024"}
+  - {id: GV4, area: Governance, weight: 1, question: "Do web forms that collect personal data show a privacy notice?", source: "CDPA"}

@@ -28,10 +28,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               ["/quarantine", "Quarantine"],
               ["/recommendations", "Actions"],
               ["/risk", "Risk"],
+              ["/assessment", "Assessment"],
               ["/models", "Models"],
               ["/reports", "Reports"],
               ["/evaluation", "Evaluate"],
               ["/sources/new", "Add source"],
+              ["/settings", "Settings"],
             ].map(([href, label]) => (
               <Link key={href} href={href} className="hover:underline">
                 {label}

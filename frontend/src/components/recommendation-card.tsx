@@ -43,12 +43,18 @@ export function RecommendationCard({
         {rec.status !== "open" && <Badge className="bg-emerald-600/15 text-emerald-800 dark:text-emerald-300">{rec.status.replace("_", " ")}</Badge>}
         {showAlert && (
           <span className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
-            {all.slice(0, 3).map((r) => (
-              <Link key={r.id} href={`/alerts/${r.alert.id}`} className="flex items-center gap-1.5 hover:underline">
-                <SeverityBadge severity={r.alert.severity} />
-                {r.alert.attack_class} from {r.alert.src_ip ?? "unknown"}
-              </Link>
-            ))}
+            {all.slice(0, 3).map((r) =>
+              r.alert ? (
+                <Link key={r.id} href={`/alerts/${r.alert.id}`} className="flex items-center gap-1.5 hover:underline">
+                  <SeverityBadge severity={r.alert.severity} />
+                  {r.alert.attack_class} from {r.alert.src_ip ?? "unknown"}
+                </Link>
+              ) : (
+                <Link key={r.id} href="/assessment" className="hover:underline" data-testid="from-assessment">
+                  <Badge className="bg-violet-600/15 text-violet-800 dark:text-violet-300">From your self-assessment</Badge>
+                </Link>
+              ),
+            )}
             {all.length > 3 && <span data-testid="more-alerts">+{all.length - 3} more alerts</span>}
           </span>
         )}

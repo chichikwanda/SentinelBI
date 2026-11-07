@@ -72,6 +72,14 @@ class Recommendation(Base):
     __tablename__ = "recommendations"
     __table_args__ = (
         Index("uq_recommendations_alert_id_rec_key", "alert_id", "rec_key", unique=True),
+        # a recommendation that comes from the self-assessment alone has no alert
+        Index(
+            "uq_recommendations_profile",
+            "org_id",
+            "rec_key",
+            unique=True,
+            postgresql_where=text("alert_id IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -87,8 +95,8 @@ class Recommendation(Base):
         nullable=False,
         index=True,
     )
-    alert_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("alerts.id", ondelete="CASCADE"), nullable=False, index=True
+    alert_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("alerts.id", ondelete="CASCADE"), index=True
     )
     rule_id: Mapped[str] = mapped_column(Text, nullable=False)
     rec_key: Mapped[str] = mapped_column(Text, nullable=False)  # "<rule id>:<action index>"

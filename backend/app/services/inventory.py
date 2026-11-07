@@ -349,7 +349,7 @@ async def quarantine_for_alert(
 
     if row.state == "quarantined":
         if isinstance(row, PeerNetwork) and str(ip) not in {str(x) for x in row.flagged_ips}:
-            row.flagged_ips = [*row.flagged_ips, str(ip)][-64:]
+            row.flagged_ips = [*(str(x) for x in row.flagged_ips), str(ip)][-64:]
         row.last_seen = max(row.last_seen, alert.last_seen)
         return None  # already held
     if row.state_by != "system" and row.state_changed_at >= alert.first_seen:
@@ -357,7 +357,7 @@ async def quarantine_for_alert(
     row.state, row.state_reason, row.state_changed_at = "quarantined", reason, now
     row.state_by, row.alert_id = "system", alert.id
     if isinstance(row, PeerNetwork) and str(ip) not in {str(x) for x in row.flagged_ips}:
-        row.flagged_ips = [*row.flagged_ips, str(ip)][-64:]
+        row.flagged_ips = [*(str(x) for x in row.flagged_ips), str(ip)][-64:]
     await session.flush()
     return label
 

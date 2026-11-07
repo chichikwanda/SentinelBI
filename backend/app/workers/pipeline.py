@@ -257,6 +257,27 @@ async def _persist_and_alert(
     return len(new_refs), touched
 
 
+LAG_KEY = "stats:lag_ms"
+LAG_KEEP = 1000  # most recent samples kept
+
+
+async def record_lag(redis: Redis, parsed: list[_Parsed]) -> None:
+    """How long each message waited between being queued and being stored (milliseconds).
+
+    The Redis stream id starts with the millisecond time the message was queued, so this is the
+    real delay a flow spent in the pipeline; Settings > System health shows its median and 95th
+    percentile as the evidence for near-real-time processing. Best effort: never fails a batch.
+    """
+    try:
+        now_ms = int(time.time() * 1000)
+        lags = [max(0, now_ms - int(p.msg_id.split("-", 1)[0])) for p in parsed]
+        if lags:
+            await redis.lpush(LAG_KEY, *lags)
+            await redis.ltrim(LAG_KEY, 0, LAG_KEEP - 1)
+    except Exception:
+        log.debug("could not record pipeline lag", exc_info=True)
+
+
 async def process_messages(
     messages: list[Message],
     *,
@@ -296,6 +317,7 @@ async def process_messages(
         result.inserted += inserted
         result.alerts_touched += touched
         result.acked.extend(p.msg_id for p in parsed)
+        await record_lag(redis, parsed)
         done = True
         break
     if not done:

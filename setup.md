@@ -196,6 +196,24 @@ New-NetFirewallRule -DisplayName "SentinelBI API" -Direction Inbound -Protocol T
 New-NetFirewallRule -DisplayName "SentinelBI NetFlow" -Direction Inbound -Protocol UDP -LocalPort 2055 -Action Allow
 ```
 
+## 9b. Doing things from the web interface instead of the terminal
+
+Open **Settings** in the web app (the navigation bar). With a platform-administrator account (an email in
+`PLATFORM_ADMIN_EMAILS` in `.env`; more can be added under Settings > Access) you can, without any command:
+
+| Task | Where |
+|---|---|
+| See whether the database, queue, workers and model are healthy, and the delay from queued to stored | Settings > System health |
+| Change alert thresholds, risk half-life, baseline and quarantine, privacy and retention, registration and sign-in limits | Settings > Alerting and risk, Baseline and quarantine, Privacy and retention, Access |
+| Download and verify the datasets, train and compare models (Decision Tree, Random Forest, LightGBM, XGBoost, Logistic Regression, MLP; optional cross-validation), then switch the active model on the Models page | Settings > Model training |
+| Switch a rule off or edit its actions | Settings > Rules |
+| Make a backup and prove it can be restored (into a scratch database) | Settings > Backups |
+| Add people and set their roles | Settings > People |
+
+Organisations answer the self-assessment on the **Assessment** page; the answers set maturity levels and add actions.
+Putting a backup back over the live database stays on the server (`scripts/restore.sh` with `FORCE=1`). Training
+needs several GB of memory for the `trainer` service (`TRAINER_MEMORY` in `.env`, 8g by default).
+
 ## 10. Everyday commands
 
 ```bash

@@ -10,7 +10,6 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.config import get_settings
 from app.core.deps import PrincipalDep, SessionDep
 from app.core.enums import Role
 from app.core.ratelimit import clear, minutes, record_hit, seconds_until_allowed
@@ -18,6 +17,7 @@ from app.core.redis import get_redis
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.models import Organization, User
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserOut
+from app.services.runtime_settings import effective_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -41,9 +41,9 @@ def _dummy_hash() -> str:
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, session: SessionDep, redis: RedisDep) -> TokenResponse:
     """Create an organisation and its first (admin) user."""
-    if not get_settings().allow_registration:
+    settings = await effective_settings(session)
+    if not settings.allow_registration:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Registration is disabled")
-    settings = get_settings()
     wait = await seconds_until_allowed(redis, "register", "all", settings.register_max_per_hour)
     if wait:
         raise _too_many(wait, "sign-ups")
@@ -70,7 +70,7 @@ async def register(body: RegisterRequest, session: SessionDep, redis: RedisDep) 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, session: SessionDep, redis: RedisDep) -> TokenResponse:
-    settings = get_settings()
+    settings = await effective_settings(session)
     # checked before the password, so a locked account cannot be guessed at while it is locked
     wait = await seconds_until_allowed(redis, "login-fail", body.email, settings.login_max_failures)
     if wait:

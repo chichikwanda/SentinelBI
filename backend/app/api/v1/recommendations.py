@@ -14,7 +14,7 @@ from app.core.deps import AnalystDep, PrincipalDep, SessionDep
 from app.core.enums import Severity
 from app.db.models import Alert, Recommendation
 from app.schemas.common import IpStr
-from app.services.prescriptive.engine import rank_score, reference_index
+from app.services.prescriptive.engine import PROFILE_SEVERITY, rank_score, reference_index
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
@@ -38,7 +38,7 @@ class AlertBrief(BaseModel):
 
 class RecommendationOut(BaseModel):
     id: uuid.UUID
-    alert_id: uuid.UUID
+    alert_id: uuid.UUID | None
     rule_id: str
     action: str
     priority: int
@@ -47,7 +47,7 @@ class RecommendationOut(BaseModel):
     rank: float
     compliance_note: str | None
     references: list[Reference]
-    alert: AlertBrief
+    alert: AlertBrief | None  # None: it comes from the self-assessment alone
 
 
 class RecommendationPatch(BaseModel):
@@ -71,8 +71,12 @@ def _references(refs: dict[str, Any]) -> list[Reference]:
     return out
 
 
-def _to_out(rec: Recommendation, alert: Alert) -> RecommendationOut:
-    criticality = int((alert.evidence or {}).get("criticality", 2))  # type: ignore[call-overload]
+def _to_out(rec: Recommendation, alert: Alert | None) -> RecommendationOut:
+    if alert is None:
+        rank = rank_score(rec.priority, PROFILE_SEVERITY, 2)
+    else:
+        criticality = int((alert.evidence or {}).get("criticality", 2))  # type: ignore[call-overload]
+        rank = rank_score(rec.priority, alert.severity, criticality)
     return RecommendationOut(
         id=rec.id,
         alert_id=rec.alert_id,
@@ -81,10 +85,12 @@ def _to_out(rec: Recommendation, alert: Alert) -> RecommendationOut:
         priority=rec.priority,
         effort=rec.effort,
         status=rec.status,
-        rank=round(rank_score(rec.priority, alert.severity, criticality), 2),
+        rank=round(rank, 2),
         compliance_note=rec.compliance_note,
         references=_references(rec.refs or {}),
-        alert=AlertBrief(
+        alert=None
+        if alert is None
+        else AlertBrief(
             id=alert.id,
             attack_class=alert.attack_class,
             severity=Severity(alert.severity),
@@ -104,8 +110,8 @@ async def list_recommendations(
 ) -> list[RecommendationOut]:
     query = (
         select(Recommendation, Alert)
-        .join(Alert, Alert.id == Recommendation.alert_id)
-        .where(Recommendation.org_id == principal.org_id, Alert.org_id == principal.org_id)
+        .outerjoin(Alert, Alert.id == Recommendation.alert_id)
+        .where(Recommendation.org_id == principal.org_id)
     )
     if alert_id is not None:
         query = query.where(Recommendation.alert_id == alert_id)
@@ -114,7 +120,9 @@ async def list_recommendations(
     else:
         # the global list is a to-do list: hide dismissed items unless explicitly asked for
         query = query.where(Recommendation.status != "dismissed") if alert_id is None else query
-    rows = (await session.execute(query.order_by(Alert.last_seen.desc()).limit(1000))).all()
+    rows = (
+        await session.execute(query.order_by(Alert.last_seen.desc().nulls_last()).limit(1000))
+    ).all()
     out = [_to_out(rec, alert) for rec, alert in rows]
     out.sort(key=lambda r: (-r.rank, r.priority, r.action))
     return out[:limit]
@@ -127,7 +135,7 @@ async def update_recommendation(
     row = (
         await session.execute(
             select(Recommendation, Alert)
-            .join(Alert, Alert.id == Recommendation.alert_id)
+            .outerjoin(Alert, Alert.id == Recommendation.alert_id)
             .where(Recommendation.id == rec_id, Recommendation.org_id == principal.org_id)
         )
     ).first()

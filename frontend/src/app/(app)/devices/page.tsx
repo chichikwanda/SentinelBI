@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DecisionButtons, ForgetButton, StateBadge } from "@/components/inventory";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +25,12 @@ export default function DevicesPage() {
   const [state, setState] = useState<DeviceState | "all">("all");
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(PAGE);
+  // the clock is state (not read while rendering) so "online" and "learning" stay correct and pure
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, []);
   const devices = useQuery({
     queryKey: ["devices", state, limit],
     queryFn: () =>
@@ -39,7 +45,7 @@ export default function DevicesPage() {
   const sources = useQuery({ queryKey: ["sources"], queryFn: () => api<Source[]>("sources") });
   const sourceName = new Map((sources.data ?? []).map((s) => [s.id, s.name]));
   const learning = (sources.data ?? []).filter(
-    (s) => s.baseline_until && new Date(s.baseline_until).getTime() > Date.now(),
+    (s) => s.baseline_until && new Date(s.baseline_until).getTime() > now,
   );
 
   const needle = search.trim().toLowerCase();
@@ -118,7 +124,7 @@ export default function DevicesPage() {
               </thead>
               <tbody>
                 {rows.map((d) => {
-                  const online = Date.now() - new Date(d.last_seen).getTime() < ONLINE_MS;
+                  const online = now - new Date(d.last_seen).getTime() < ONLINE_MS;
                   return (
                     <tr key={d.id}>
                       <Td className="font-mono">

@@ -27,7 +27,7 @@ COPY data/samples /repo/data/samples
 # scikit-learn bundles its own, so a Random Forest loads without it and this bug stayed hidden
 # until a LightGBM artifact was loaded inside the container.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libgomp1 \
+ && apt-get install -y --no-install-recommends libgomp1 postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 USER app
 EXPOSE 8000
