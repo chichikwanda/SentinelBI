@@ -1,5 +1,6 @@
 "use client";
 
+import { WalkthroughSheet } from "@/components/walkthrough-sheet";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -126,6 +127,7 @@ export default function EvaluationPage() {
           </CardContent>
         </Card>
       )}
+      <WalkthroughSheet />
       {ins && (
         <>
           <Likert

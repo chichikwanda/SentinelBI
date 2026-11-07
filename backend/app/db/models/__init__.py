@@ -11,6 +11,7 @@ from app.db.models.reference import (
     RiskSnapshot,
     TrainingJob,
     Vulnerability,
+    WalkthroughRecord,
 )
 from app.db.models.sources import Asset, Source
 from app.db.models.tenancy import Organization, User
@@ -31,6 +32,7 @@ __all__ = [
     "TrainingJob",
     "User",
     "Vulnerability",
+    "WalkthroughRecord",
     "flows",
     "predictions",
 ]

@@ -134,4 +134,4 @@ async def test_health_reports_database_queue_and_schema(
 ) -> None:
     h = (await client.get("/api/v1/settings/health", headers=admin.headers)).json()
     assert h["database"]["ok"] and h["queue"]["ok"]
-    assert h["schema_version"] == "0008"
+    assert h["schema_version"] == "0009"

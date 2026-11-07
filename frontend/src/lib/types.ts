@@ -431,3 +431,10 @@ export interface BackupRow {
   bytes: number;
   has_models: boolean;
 }
+
+// --- walkthrough ---------------------------------------------------------------------------
+export interface WalkthroughSummary {
+  participants: string[];
+  tasks: { task: string; description: string; participants: number; completed: number; mean_seconds: number | null; errors: number }[];
+  themes: { theme: string; label: string; participants: number; comment: string | null }[];
+}

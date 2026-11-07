@@ -12,6 +12,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     SmallInteger,
     Text,
     func,
@@ -179,5 +180,38 @@ class AssessmentAnswer(Base):
     score: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     updated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WalkthroughRecord(Base):
+    """One line of the walkthrough observation sheet: a task result or a participant comment.
+    Participants are identified by code (P1, P2, ...) only."""
+
+    __tablename__ = "walkthrough_records"
+    __table_args__ = (
+        CheckConstraint("kind IN ('task', 'comment')", name="kind"),
+        Index("ix_walkthrough_records_org_id_created_at", "org_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    participant: Mapped[str] = mapped_column(Text, nullable=False)
+    task: Mapped[str | None] = mapped_column(Text)
+    completed: Mapped[bool | None] = mapped_column(Boolean)
+    seconds: Mapped[int | None] = mapped_column(Integer)
+    errors: Mapped[int | None] = mapped_column(Integer)
+    theme: Mapped[str | None] = mapped_column(Text)
+    text: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
